@@ -16,6 +16,7 @@ export default function Navbar() {
   const pathname = usePathname();
   const router = useRouter();
   const { user, loading } = useUser();
+
   const [mobileOpen, setMobileOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
 
@@ -120,7 +121,7 @@ export default function Navbar() {
             {loading ? (
               <div className="h-10 w-full rounded-xl border border-zinc-200 bg-zinc-100" />
             ) : user ? (
-              <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+              <div className="mt-2 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
                 <div className="text-xs text-zinc-500">Signed in as</div>
                 <div className="mt-1 break-all text-sm font-medium text-zinc-900">
                   {user.email}
