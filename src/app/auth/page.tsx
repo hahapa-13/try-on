@@ -15,7 +15,7 @@ export default async function AuthPage({
   } = await supabase.auth.getSession();
 
   if (session) {
-    redirect("/dashboard");
+    redirect("/");
   }
 
   const { error } = (await searchParams) ?? {};

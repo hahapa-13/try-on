@@ -1,8 +1,6 @@
-"use client";
-
 import { Container } from "@/components/Container";
 import { ButtonLink } from "@/components/ui/Button";
-import { useUser } from "@/hooks/useUser";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 function FeatureCard({
   title,
@@ -49,8 +47,13 @@ function StepCard({
   );
 }
 
-export default function Home() {
-  const { user } = useUser();
+export default async function Home() {
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  const user = session?.user ?? null;
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-black">
@@ -158,18 +161,9 @@ export default function Home() {
           </section>
 
           <section className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <FeatureCard
-              title="Wardrobe"
-              description="Save and reuse your items."
-            />
-            <FeatureCard
-              title="Wishlist"
-              description="Keep items to try later."
-            />
-            <FeatureCard
-              title="Outfits"
-              description="Store complete looks."
-            />
+            <FeatureCard title="Wardrobe" description="Save and reuse your items." />
+            <FeatureCard title="Wishlist" description="Keep items to try later." />
+            <FeatureCard title="Outfits" description="Store complete looks." />
           </section>
         </div>
       </Container>
