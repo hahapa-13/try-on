@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type NavbarUser = {
@@ -23,11 +23,16 @@ export default function Navbar({
 }) {
   const pathname = usePathname();
   const router = useRouter();
+
   const [mobileOpen, setMobileOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [user, setUser] = useState<NavbarUser>(initialUser);
 
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
+
+  useEffect(() => {
+    setUser(initialUser);
+  }, [initialUser]);
 
   const navLinks = [
     { href: "/", label: "Home" },
@@ -42,7 +47,7 @@ export default function Navbar({
     setUser(null);
     setProfileOpen(false);
     setMobileOpen(false);
-    router.replace("/auth");
+    router.replace("/");
     router.refresh();
   }
 

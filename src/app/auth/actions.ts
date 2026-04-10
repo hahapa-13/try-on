@@ -14,10 +14,12 @@ export async function signIn(formData: FormData) {
 
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase.auth.signInWithPassword({ email, password });
+
   if (error) {
     redirect(`/auth?error=${encodeURIComponent(error.message)}`);
   }
-  redirect("/dashboard");
+
+  redirect("/");
 }
 
 export async function signUp(formData: FormData) {
@@ -26,10 +28,12 @@ export async function signUp(formData: FormData) {
 
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase.auth.signUp({ email, password });
+
   if (error) {
     redirect(`/auth?error=${encodeURIComponent(error.message)}`);
   }
-  redirect("/dashboard");
+
+  redirect("/");
 }
 
 export async function signOut() {
@@ -37,4 +41,3 @@ export async function signOut() {
   await supabase.auth.signOut();
   redirect("/");
 }
-
