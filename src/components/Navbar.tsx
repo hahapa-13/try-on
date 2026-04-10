@@ -4,7 +4,11 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
-import { useUser } from "@/hooks/useUser";
+
+type NavbarUser = {
+  id: string;
+  email: string | null;
+} | null;
 
 function navItemClass(active: boolean) {
   return active
@@ -12,13 +16,16 @@ function navItemClass(active: boolean) {
     : "inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium text-zinc-700 transition hover:bg-zinc-100";
 }
 
-export default function Navbar() {
+export default function Navbar({
+  initialUser,
+}: {
+  initialUser: NavbarUser;
+}) {
   const pathname = usePathname();
   const router = useRouter();
-  const { user, loading } = useUser();
-
   const [mobileOpen, setMobileOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [user, setUser] = useState<NavbarUser>(initialUser);
 
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
 
@@ -32,9 +39,10 @@ export default function Navbar() {
 
   async function handleLogout() {
     await supabase.auth.signOut();
+    setUser(null);
     setProfileOpen(false);
     setMobileOpen(false);
-    router.push("/auth");
+    router.replace("/auth");
     router.refresh();
   }
 
@@ -59,9 +67,7 @@ export default function Navbar() {
             </Link>
           ))}
 
-          {loading ? (
-            <div className="ml-2 h-10 w-28 rounded-xl border border-zinc-200 bg-zinc-100" />
-          ) : user ? (
+          {user ? (
             <div className="relative ml-2">
               <button
                 onClick={() => setProfileOpen((v) => !v)}
@@ -118,9 +124,7 @@ export default function Navbar() {
               </Link>
             ))}
 
-            {loading ? (
-              <div className="h-10 w-full rounded-xl border border-zinc-200 bg-zinc-100" />
-            ) : user ? (
+            {user ? (
               <div className="mt-2 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
                 <div className="text-xs text-zinc-500">Signed in as</div>
                 <div className="mt-1 break-all text-sm font-medium text-zinc-900">
