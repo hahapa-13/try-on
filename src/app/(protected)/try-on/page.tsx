@@ -306,38 +306,41 @@ export default function TryOnPage() {
     try {
       setError(null);
       setIsSavingWishlist(true);
-
+  
       if (!user) {
         setError("You must be logged in to save to wishlist.");
         return;
       }
-
+  
       let finalClothingUrl = clothingUrl;
-
+  
       if (clothing && (!finalClothingUrl || finalClothingUrl.startsWith("blob:"))) {
         finalClothingUrl = await uploadFileToSupabase(clothing, "wishlist-items");
+  
         setClothingUrl(finalClothingUrl);
         writeTryOnStorage({
           avatarUrl,
           clothingUrl: finalClothingUrl,
         });
       }
-
+  
       if (!finalClothingUrl) {
         setError("Please select a clothing item first.");
         return;
       }
-
+  
       const { error } = await supabase.from("wishlist").insert({
         user_id: user.id,
         image_url: finalClothingUrl,
+        type: "unknown",
+        title: "Wishlist item",
       });
-
+  
       if (error) {
         setError(error.message);
         return;
       }
-
+  
       alert("Saved to wishlist!");
     } catch (err: any) {
       setError(err.message || "Something went wrong.");
@@ -350,38 +353,41 @@ export default function TryOnPage() {
     try {
       setError(null);
       setIsSavingWardrobe(true);
-
+  
       if (!user) {
         setError("You must be logged in to save to wardrobe.");
         return;
       }
-
+  
       let finalClothingUrl = clothingUrl;
-
+  
       if (clothing && (!finalClothingUrl || finalClothingUrl.startsWith("blob:"))) {
         finalClothingUrl = await uploadFileToSupabase(clothing, "wardrobe-items");
+  
         setClothingUrl(finalClothingUrl);
         writeTryOnStorage({
           avatarUrl,
           clothingUrl: finalClothingUrl,
         });
       }
-
+  
       if (!finalClothingUrl) {
         setError("Please select a clothing item first.");
         return;
       }
-
+  
       const { error } = await supabase.from("wardrobe").insert({
         user_id: user.id,
         image_url: finalClothingUrl,
+        type: "unknown",
+        title: "My item",
       });
-
+  
       if (error) {
         setError(error.message);
         return;
       }
-
+  
       alert("Saved to wardrobe!");
     } catch (err: any) {
       setError(err.message || "Something went wrong.");
