@@ -10,30 +10,28 @@ import { compressImage } from "@/lib/image";
 
 type TryOnStorage = {
   avatarUrl: string | null;
-  clothingUrl: string | null;
 };
 
 const TRY_ON_STORAGE_KEY = "tryOnData";
 
 function readTryOnStorage(): TryOnStorage {
   if (typeof window === "undefined") {
-    return { avatarUrl: null, clothingUrl: null };
+    return { avatarUrl: null };
   }
 
   try {
     const raw = sessionStorage.getItem(TRY_ON_STORAGE_KEY);
     if (!raw) {
-      return { avatarUrl: null, clothingUrl: null };
+      return { avatarUrl: null };
     }
 
     const parsed = JSON.parse(raw) as Partial<TryOnStorage>;
 
     return {
       avatarUrl: parsed.avatarUrl ?? null,
-      clothingUrl: parsed.clothingUrl ?? null,
     };
   } catch {
-    return { avatarUrl: null, clothingUrl: null };
+    return { avatarUrl: null };
   }
 }
 
@@ -109,16 +107,21 @@ export default function TryOnPage() {
     const selectedAvatar = localStorage.getItem("selectedAvatar");
     const selectedClothing = localStorage.getItem("selectedClothing");
 
-    const nextAvatarUrl = selectedAvatar ?? stored.avatarUrl;
-    const nextClothingUrl = selectedClothing ?? stored.clothingUrl;
+    const nextAvatarUrl = selectedAvatar ?? stored.avatarUrl ?? null;
+    const nextClothingUrl = selectedClothing ?? null;
 
     setAvatarUrl(nextAvatarUrl);
     setClothingUrl(nextClothingUrl);
     setClothingInputUrl(nextClothingUrl ?? "");
 
+    setClothing(null);
+    setResultUrl(null);
+    setPendingResultBlob(null);
+    setLastKey(null);
+    setError(null);
+
     writeTryOnStorage({
       avatarUrl: nextAvatarUrl,
-      clothingUrl: nextClothingUrl,
     });
 
     if (selectedAvatar) localStorage.removeItem("selectedAvatar");
@@ -240,7 +243,6 @@ export default function TryOnPage() {
 
       writeTryOnStorage({
         avatarUrl: objectUrl,
-        clothingUrl,
       });
     } catch (err: any) {
       setError(err.message || "Failed to prepare avatar image.");
@@ -272,11 +274,9 @@ export default function TryOnPage() {
       setClothing(compressed);
       setClothingUrl(objectUrl);
       setClothingInputUrl("");
-
-      writeTryOnStorage({
-        avatarUrl,
-        clothingUrl: objectUrl,
-      });
+      setResultUrl(null);
+      setPendingResultBlob(null);
+      setLastKey(null);
     } catch (err: any) {
       setError(err.message || "Failed to prepare clothing image.");
     } finally {
@@ -295,52 +295,43 @@ export default function TryOnPage() {
     setError(null);
     setClothing(null);
     setClothingUrl(trimmed);
-
-    writeTryOnStorage({
-      avatarUrl,
-      clothingUrl: trimmed,
-    });
+    setResultUrl(null);
+    setPendingResultBlob(null);
+    setLastKey(null);
   }
 
   async function saveItemToWishlist() {
     try {
       setError(null);
       setIsSavingWishlist(true);
-  
+
       if (!user) {
         setError("You must be logged in to save to wishlist.");
         return;
       }
-  
+
       let finalClothingUrl = clothingUrl;
-  
+
       if (clothing && (!finalClothingUrl || finalClothingUrl.startsWith("blob:"))) {
         finalClothingUrl = await uploadFileToSupabase(clothing, "wishlist-items");
-  
         setClothingUrl(finalClothingUrl);
-        writeTryOnStorage({
-          avatarUrl,
-          clothingUrl: finalClothingUrl,
-        });
       }
-  
+
       if (!finalClothingUrl) {
         setError("Please select a clothing item first.");
         return;
       }
-  
+
       const { error } = await supabase.from("wishlist").insert({
         user_id: user.id,
         image_url: finalClothingUrl,
-        type: "unknown",
-        title: "Wishlist item",
       });
-  
+
       if (error) {
         setError(error.message);
         return;
       }
-  
+
       alert("Saved to wishlist!");
     } catch (err: any) {
       setError(err.message || "Something went wrong.");
@@ -353,41 +344,34 @@ export default function TryOnPage() {
     try {
       setError(null);
       setIsSavingWardrobe(true);
-  
+
       if (!user) {
         setError("You must be logged in to save to wardrobe.");
         return;
       }
-  
+
       let finalClothingUrl = clothingUrl;
-  
+
       if (clothing && (!finalClothingUrl || finalClothingUrl.startsWith("blob:"))) {
         finalClothingUrl = await uploadFileToSupabase(clothing, "wardrobe-items");
-  
         setClothingUrl(finalClothingUrl);
-        writeTryOnStorage({
-          avatarUrl,
-          clothingUrl: finalClothingUrl,
-        });
       }
-  
+
       if (!finalClothingUrl) {
         setError("Please select a clothing item first.");
         return;
       }
-  
+
       const { error } = await supabase.from("wardrobe").insert({
         user_id: user.id,
         image_url: finalClothingUrl,
-        type: "unknown",
-        title: "My item",
       });
-  
+
       if (error) {
         setError(error.message);
         return;
       }
-  
+
       alert("Saved to wardrobe!");
     } catch (err: any) {
       setError(err.message || "Something went wrong.");
@@ -490,6 +474,7 @@ export default function TryOnPage() {
     setPendingResultBlob(null);
     setResultUrl(null);
     setError(null);
+    setLastKey(null);
   }
 
   function clearAvatar() {
@@ -498,7 +483,6 @@ export default function TryOnPage() {
 
     writeTryOnStorage({
       avatarUrl: null,
-      clothingUrl,
     });
 
     localStorage.removeItem("selectedAvatar");
@@ -508,11 +492,13 @@ export default function TryOnPage() {
     setClothing(null);
     setClothingUrl(null);
     setClothingInputUrl("");
+    setPendingResultBlob(null);
+    setLastKey(null);
 
-    writeTryOnStorage({
-      avatarUrl,
-      clothingUrl: null,
-    });
+    if (resultUrl && resultUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(resultUrl);
+    }
+    setResultUrl(null);
 
     localStorage.removeItem("selectedClothing");
   }
