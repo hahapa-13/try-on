@@ -10,28 +10,30 @@ import { compressImage } from "@/lib/image";
 
 type TryOnStorage = {
   avatarUrl: string | null;
+  clothingUrl: string | null;
 };
 
 const TRY_ON_STORAGE_KEY = "tryOnData";
 
 function readTryOnStorage(): TryOnStorage {
   if (typeof window === "undefined") {
-    return { avatarUrl: null };
+    return { avatarUrl: null, clothingUrl: null };
   }
 
   try {
     const raw = sessionStorage.getItem(TRY_ON_STORAGE_KEY);
     if (!raw) {
-      return { avatarUrl: null };
+      return { avatarUrl: null, clothingUrl: null };
     }
 
     const parsed = JSON.parse(raw) as Partial<TryOnStorage>;
 
     return {
       avatarUrl: parsed.avatarUrl ?? null,
+      clothingUrl: parsed.clothingUrl ?? null,
     };
   } catch {
-    return { avatarUrl: null };
+    return { avatarUrl: null, clothingUrl: null };
   }
 }
 
@@ -110,18 +112,16 @@ export default function TryOnPage() {
     const nextAvatarUrl = selectedAvatar ?? stored.avatarUrl ?? null;
     const nextClothingUrl = selectedClothing ?? null;
 
+    setAvatar(null);
+    setClothing(null);
+
     setAvatarUrl(nextAvatarUrl);
     setClothingUrl(nextClothingUrl);
     setClothingInputUrl(nextClothingUrl ?? "");
 
-    setClothing(null);
-    setResultUrl(null);
-    setPendingResultBlob(null);
-    setLastKey(null);
-    setError(null);
-
     writeTryOnStorage({
       avatarUrl: nextAvatarUrl,
+      clothingUrl: null,
     });
 
     if (selectedAvatar) localStorage.removeItem("selectedAvatar");
@@ -236,13 +236,15 @@ export default function TryOnPage() {
         mimeType: "image/jpeg",
       });
 
-      const objectUrl = URL.createObjectURL(compressed);
-
       setAvatar(compressed);
-      setAvatarUrl(objectUrl);
+
+      const uploadedAvatarUrl = await uploadFileToSupabase(compressed, "avatars");
+
+      setAvatarUrl(uploadedAvatarUrl);
 
       writeTryOnStorage({
-        avatarUrl: objectUrl,
+        avatarUrl: uploadedAvatarUrl,
+        clothingUrl,
       });
     } catch (err: any) {
       setError(err.message || "Failed to prepare avatar image.");
@@ -274,9 +276,11 @@ export default function TryOnPage() {
       setClothing(compressed);
       setClothingUrl(objectUrl);
       setClothingInputUrl("");
-      setResultUrl(null);
-      setPendingResultBlob(null);
-      setLastKey(null);
+
+      writeTryOnStorage({
+        avatarUrl,
+        clothingUrl: objectUrl,
+      });
     } catch (err: any) {
       setError(err.message || "Failed to prepare clothing image.");
     } finally {
@@ -295,9 +299,11 @@ export default function TryOnPage() {
     setError(null);
     setClothing(null);
     setClothingUrl(trimmed);
-    setResultUrl(null);
-    setPendingResultBlob(null);
-    setLastKey(null);
+
+    writeTryOnStorage({
+      avatarUrl,
+      clothingUrl: trimmed,
+    });
   }
 
   async function saveItemToWishlist() {
@@ -315,6 +321,10 @@ export default function TryOnPage() {
       if (clothing && (!finalClothingUrl || finalClothingUrl.startsWith("blob:"))) {
         finalClothingUrl = await uploadFileToSupabase(clothing, "wishlist-items");
         setClothingUrl(finalClothingUrl);
+        writeTryOnStorage({
+          avatarUrl,
+          clothingUrl: finalClothingUrl,
+        });
       }
 
       if (!finalClothingUrl) {
@@ -355,6 +365,10 @@ export default function TryOnPage() {
       if (clothing && (!finalClothingUrl || finalClothingUrl.startsWith("blob:"))) {
         finalClothingUrl = await uploadFileToSupabase(clothing, "wardrobe-items");
         setClothingUrl(finalClothingUrl);
+        writeTryOnStorage({
+          avatarUrl,
+          clothingUrl: finalClothingUrl,
+        });
       }
 
       if (!finalClothingUrl) {
@@ -459,6 +473,16 @@ export default function TryOnPage() {
 
       setResultUrl(resultPublicUrl);
       setPendingResultBlob(null);
+
+      writeTryOnStorage({
+        avatarUrl,
+        clothingUrl: null,
+      });
+
+      setClothing(null);
+      setClothingUrl(null);
+      setClothingInputUrl("");
+      localStorage.removeItem("selectedClothing");
     } catch (err: any) {
       setError(err.message || "Something went wrong.");
     } finally {
@@ -474,7 +498,16 @@ export default function TryOnPage() {
     setPendingResultBlob(null);
     setResultUrl(null);
     setError(null);
-    setLastKey(null);
+
+    writeTryOnStorage({
+      avatarUrl,
+      clothingUrl: null,
+    });
+
+    setClothing(null);
+    setClothingUrl(null);
+    setClothingInputUrl("");
+    localStorage.removeItem("selectedClothing");
   }
 
   function clearAvatar() {
@@ -483,6 +516,7 @@ export default function TryOnPage() {
 
     writeTryOnStorage({
       avatarUrl: null,
+      clothingUrl,
     });
 
     localStorage.removeItem("selectedAvatar");
@@ -492,13 +526,11 @@ export default function TryOnPage() {
     setClothing(null);
     setClothingUrl(null);
     setClothingInputUrl("");
-    setPendingResultBlob(null);
-    setLastKey(null);
 
-    if (resultUrl && resultUrl.startsWith("blob:")) {
-      URL.revokeObjectURL(resultUrl);
-    }
-    setResultUrl(null);
+    writeTryOnStorage({
+      avatarUrl,
+      clothingUrl: null,
+    });
 
     localStorage.removeItem("selectedClothing");
   }
