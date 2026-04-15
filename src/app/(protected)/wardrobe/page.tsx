@@ -1,46 +1,57 @@
+/* eslint-disable @next/next/no-img-element */
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { useUser } from "@/hooks/useUser";
-import { useRouter } from "next/navigation";
+import { ImageUpload } from "@/components/ImageUpload";
 
 type WardrobeItem = {
   id: string;
-  user_id: string | null;
   image_url: string;
   created_at: string;
+  title?: string | null;
+  type?: string | null;
 };
 
 export default function WardrobePage() {
-  const { user, loading: userLoading } = useUser();
-  const router = useRouter();
+  const { user, loading } = useUser();
+  const supabase = useMemo(() => createSupabaseBrowserClient(), []);
 
   const [items, setItems] = useState<WardrobeItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [pageLoading, setPageLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newFile, setNewFile] = useState<File | null>(null);
+  const [newUrl, setNewUrl] = useState("");
+  const [title, setTitle] = useState("");
+  const [type, setType] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
   useEffect(() => {
-    if (userLoading) return;
-    if (!user) {
-      setLoading(false);
-      return;
+    if (!loading && user) {
+      loadItems();
     }
 
-    loadWardrobe();
-  }, [user, userLoading]);
+    if (!loading && !user) {
+      setPageLoading(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, user]);
 
-  async function loadWardrobe() {
-    const supabase = createSupabaseBrowserClient();
-
+  async function loadItems() {
     try {
-      setLoading(true);
+      setPageLoading(true);
       setError(null);
+
+      if (!user) return;
 
       const { data, error } = await supabase
         .from("wardrobe")
-        .select("*")
-        .eq("user_id", user!.id)
+        .select("id, image_url, created_at, title, type")
+        .eq("user_id", user.id)
         .order("created_at", { ascending: false });
 
       if (error) {
@@ -48,128 +59,273 @@ export default function WardrobePage() {
         return;
       }
 
-      setItems((data as WardrobeItem[]) || []);
+      setItems((data ?? []) as WardrobeItem[]);
     } catch (err: any) {
       setError(err.message || "Failed to load wardrobe.");
     } finally {
-      setLoading(false);
+      setPageLoading(false);
     }
   }
 
-  async function deleteItem(id: string, imageUrl: string) {
-    const confirmed = window.confirm("Are you sure you want to delete this item?");
-    if (!confirmed) return;
+  async function uploadFileToSupabase(file: File) {
+    const filePath = `wardrobe-items/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
 
-    const supabase = createSupabaseBrowserClient();
+    const { data, error } = await supabase.storage
+      .from("outfits")
+      .upload(filePath, file);
 
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    const { data: publicUrlData } = supabase.storage
+      .from("outfits")
+      .getPublicUrl(data.path);
+
+    return publicUrlData.publicUrl;
+  }
+
+  async function handleAddItem() {
     try {
-      const { error } = await supabase.from("wardrobe").delete().eq("id", id);
+      setError(null);
 
-      if (error) {
-        alert(error.message);
+      if (!user) {
+        setError("You must be logged in.");
         return;
       }
 
-      const path = imageUrl.split("/object/public/outfits/")[1];
-      if (path) {
-        await supabase.storage.from("outfits").remove([path]);
+      if (!newFile && !newUrl.trim()) {
+        setError("Please upload an image or paste an image URL.");
+        return;
+      }
+
+      setSaving(true);
+
+      let imageUrl = newUrl.trim();
+
+      if (newFile) {
+        imageUrl = await uploadFileToSupabase(newFile);
+      }
+
+      const { error } = await supabase.from("wardrobe").insert({
+        user_id: user.id,
+        image_url: imageUrl,
+        title: title.trim() || null,
+        type: type.trim() || null,
+      });
+
+      if (error) {
+        setError(error.message);
+        return;
+      }
+
+      setNewFile(null);
+      setNewUrl("");
+      setTitle("");
+      setType("");
+      setShowAddForm(false);
+
+      await loadItems();
+    } catch (err: any) {
+      setError(err.message || "Failed to add item.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete(id: string) {
+    try {
+      setError(null);
+      setDeletingId(id);
+
+      const { error } = await supabase.from("wardrobe").delete().eq("id", id);
+
+      if (error) {
+        setError(error.message);
+        return;
       }
 
       setItems((prev) => prev.filter((item) => item.id !== id));
     } catch (err: any) {
-      alert(err.message || "Failed to delete item.");
+      setError(err.message || "Failed to delete item.");
+    } finally {
+      setDeletingId(null);
     }
   }
 
-  const isLoading = userLoading || loading;
+  function handleUseInTryOn(imageUrl: string) {
+    localStorage.setItem("selectedClothing", imageUrl);
+    window.location.href = "/try-on";
+  }
+
+  if (loading || pageLoading) {
+    return (
+      <div className="min-h-screen bg-zinc-50 dark:bg-black">
+        <div className="mx-auto w-full max-w-6xl px-4 py-6">
+          <div className="text-sm text-zinc-500 dark:text-zinc-400">Loading wardrobe...</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-zinc-50 dark:bg-black">
+        <div className="mx-auto w-full max-w-6xl px-4 py-6">
+          <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+            <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">
+              Wardrobe
+            </h1>
+            <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+              You need to log in to see your wardrobe.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-black">
-      <div className="mx-auto max-w-md px-4 py-6 space-y-6">
-        <div>
-          <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">
-            Wardrobe
-          </h1>
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">
-            Your saved clothing items and looks.
-          </p>
+      <div className="mx-auto w-full max-w-6xl px-4 py-6">
+        <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+              Wardrobe
+            </h1>
+            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+              Save clothing items and reuse them in try-on.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setShowAddForm((prev) => !prev)}
+            className="rounded-xl bg-black px-4 py-2.5 text-sm font-medium text-white dark:bg-zinc-50 dark:text-zinc-900"
+          >
+            {showAddForm ? "Close" : "Add item"}
+          </button>
         </div>
 
-        {isLoading && (
-          <div className="rounded-xl border border-zinc-200 bg-white p-4 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
-            Loading wardrobe...
-          </div>
-        )}
-
-        {!isLoading && error && (
-          <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-600 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-300">
+        {error && (
+          <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-950/40 dark:text-red-200">
             {error}
           </div>
         )}
 
-        {!isLoading && !error && items.length === 0 && (
-          <div className="rounded-xl border border-zinc-200 bg-white p-4 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
-            No items saved yet.
+        {showAddForm && (
+          <div className="mb-6 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+            <div className="grid gap-4">
+              <ImageUpload
+                label="Upload clothing item"
+                helpText="PNG, JPG, or WEBP (max 10MB)"
+                value={newFile}
+                onChange={setNewFile}
+              />
+
+              <div className="grid gap-2">
+                <label className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                  Or add by image URL
+                </label>
+                <input
+                  type="text"
+                  value={newUrl}
+                  onChange={(e) => setNewUrl(e.target.value)}
+                  placeholder="https://example.com/item.jpg"
+                  className="h-11 rounded-xl border border-zinc-300 bg-white px-3 text-sm text-zinc-900 outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
+                />
+              </div>
+
+              <div className="grid gap-2">
+                <label className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                  Title (optional)
+                </label>
+                <input
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="Brown jacket"
+                  className="h-11 rounded-xl border border-zinc-300 bg-white px-3 text-sm text-zinc-900 outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
+                />
+              </div>
+
+              <div className="grid gap-2">
+                <label className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                  Type (optional)
+                </label>
+                <input
+                  type="text"
+                  value={type}
+                  onChange={(e) => setType(e.target.value)}
+                  placeholder="Jacket / Hoodie / Dress"
+                  className="h-11 rounded-xl border border-zinc-300 bg-white px-3 text-sm text-zinc-900 outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={handleAddItem}
+                disabled={saving}
+                className="rounded-xl bg-black px-4 py-3 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900"
+              >
+                {saving ? "Saving..." : "Save item"}
+              </button>
+            </div>
           </div>
         )}
 
-        {!isLoading && !error && items.length > 0 && (
-          <div className="space-y-4">
-            {items.map((item) => {
-              return (
-                <div
-                  key={item.id}
-                  className="rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 space-y-3"
-                >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      localStorage.setItem("selectedClothing", item.image_url);
-                      router.push("/try-on");
-                    }}
-                    className="block w-full overflow-hidden rounded-xl bg-white dark:bg-zinc-950"
-                  >
-                    <div className="aspect-[4/5] w-full">
-                      <img
-                        src={item.image_url}
-                        alt="Wardrobe item"
-                        className="h-full w-full object-contain"
-                        loading="lazy"
-                      />
-                    </div>
-                  </button>
+        {items.length === 0 ? (
+          <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">
+              No wardrobe items yet. Add your first item.
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {items.map((item) => (
+              <div
+                key={item.id}
+                className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950"
+              >
+                <div className="aspect-[4/5] w-full bg-zinc-100 dark:bg-zinc-900">
+                  <img
+                    src={item.image_url}
+                    alt={item.title || "Wardrobe item"}
+                    className="block h-full w-full object-contain"
+                  />
+                </div>
 
-                  <div className="flex items-center justify-between">
-                    <div className="text-xs text-zinc-400">
-                      {new Date(item.created_at).toLocaleDateString()}
+                <div className="space-y-3 p-4">
+                  <div className="min-h-[52px]">
+                    <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                      {item.title || "Untitled item"}
                     </div>
-
-                    <div className="rounded-full bg-zinc-100 px-2 py-1 text-[11px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-                      Saved
+                    <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                      {item.type || "No type"}
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-1 gap-2">
                     <button
-                      onClick={() => {
-                        localStorage.setItem("selectedClothing", item.image_url);
-                        router.push("/try-on");
-                      }}
-                      className="w-full rounded-xl bg-black py-2.5 text-sm font-medium text-white dark:bg-zinc-50 dark:text-zinc-900"
+                      type="button"
+                      onClick={() => handleUseInTryOn(item.image_url)}
+                      className="rounded-xl bg-black px-3 py-2.5 text-sm font-medium text-white dark:bg-zinc-50 dark:text-zinc-900"
                     >
-                      Try on
+                      Use in Try-On
                     </button>
 
                     <button
-                      onClick={() => deleteItem(item.id, item.image_url)}
-                      className="w-full rounded-xl bg-red-500 py-2.5 text-sm font-medium text-white"
+                      type="button"
+                      onClick={() => handleDelete(item.id)}
+                      disabled={deletingId === item.id}
+                      className="rounded-xl border border-zinc-300 px-3 py-2.5 text-sm font-medium text-zinc-900 dark:border-zinc-700 dark:text-zinc-50"
                     >
-                      Delete
+                      {deletingId === item.id ? "Deleting..." : "Delete"}
                     </button>
                   </div>
                 </div>
-              );
-            })}
+              </div>
+            ))}
           </div>
         )}
       </div>
