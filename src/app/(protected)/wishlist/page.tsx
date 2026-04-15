@@ -29,6 +29,7 @@ export default function WishlistPage() {
   const [type, setType] = useState("");
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [movingId, setMovingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!loading && user) {
@@ -150,6 +151,46 @@ export default function WishlistPage() {
       setError(err.message || "Failed to delete item.");
     } finally {
       setDeletingId(null);
+    }
+  }
+
+  async function handleMoveToWardrobe(item: WishlistItem) {
+    try {
+      if (!user) {
+        setError("You must be logged in.");
+        return;
+      }
+
+      setError(null);
+      setMovingId(item.id);
+
+      const { error: insertError } = await supabase.from("wardrobe").insert({
+        user_id: user.id,
+        image_url: item.image_url,
+        title: item.title ?? null,
+        type: item.type ?? null,
+      });
+
+      if (insertError) {
+        setError(insertError.message);
+        return;
+      }
+
+      const { error: deleteError } = await supabase
+        .from("wishlist")
+        .delete()
+        .eq("id", item.id);
+
+      if (deleteError) {
+        setError(deleteError.message);
+        return;
+      }
+
+      setItems((prev) => prev.filter((wishlistItem) => wishlistItem.id !== item.id));
+    } catch (err: any) {
+      setError(err.message || "Failed to move item to wardrobe.");
+    } finally {
+      setMovingId(null);
     }
   }
 
@@ -312,6 +353,15 @@ export default function WishlistPage() {
                       className="rounded-xl bg-black px-3 py-2.5 text-sm font-medium text-white dark:bg-zinc-50 dark:text-zinc-900"
                     >
                       Use in Try-On
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleMoveToWardrobe(item)}
+                      disabled={movingId === item.id}
+                      className="rounded-xl border border-zinc-300 px-3 py-2.5 text-sm font-medium text-zinc-900 dark:border-zinc-700 dark:text-zinc-50"
+                    >
+                      {movingId === item.id ? "Moving..." : "Move to wardrobe"}
                     </button>
 
                     <button
