@@ -1,7 +1,7 @@
 /* eslint-disable @next/next/no-img-element */
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { useUser } from "@/hooks/useUser";
 import { ImageUpload } from "@/components/ImageUpload";
@@ -20,15 +20,10 @@ function readTryOnStorage(): TryOnStorage {
   if (typeof window === "undefined") {
     return { avatarUrl: null, clothingUrl: null };
   }
-
   try {
     const raw = sessionStorage.getItem(TRY_ON_STORAGE_KEY);
-    if (!raw) {
-      return { avatarUrl: null, clothingUrl: null };
-    }
-
+    if (!raw) return { avatarUrl: null, clothingUrl: null };
     const parsed = JSON.parse(raw) as Partial<TryOnStorage>;
-
     return {
       avatarUrl: parsed.avatarUrl ?? null,
       clothingUrl: parsed.clothingUrl ?? null,
@@ -78,6 +73,7 @@ export default function TryOnPage() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
 
   const [mounted, setMounted] = useState(false);
+  const profileEnsuredRef = useRef(false);
 
   const [avatar, setAvatar] = useState<File | null>(null);
   const [clothing, setClothing] = useState<File | null>(null);
@@ -99,15 +95,19 @@ export default function TryOnPage() {
   const [pendingResultBlob, setPendingResultBlob] = useState<Blob | null>(null);
   const [lastKey, setLastKey] = useState<string | null>(null);
 
+  const avatarBlobRef = useRef<string | null>(null);
+  const clothingBlobRef = useRef<string | null>(null);
+  const resultBlobRef = useRef<string | null>(null);
+
   useEffect(() => {
     setMounted(true);
   }, []);
 
+  // On mount: read sessionStorage and consume localStorage handoffs
   useEffect(() => {
     if (!mounted) return;
 
     const stored = readTryOnStorage();
-
     const selectedAvatar = localStorage.getItem("selectedAvatar");
     const selectedClothing = localStorage.getItem("selectedClothing");
 
@@ -127,30 +127,30 @@ export default function TryOnPage() {
     if (selectedClothing) localStorage.removeItem("selectedClothing");
   }, [mounted]);
 
+  // Load profile avatar once when user is available — ensureMyProfile called only once
   useEffect(() => {
-    if (!mounted || !user) return;
-  
+    if (!mounted || !user || profileEnsuredRef.current) return;
+
+    profileEnsuredRef.current = true;
     let cancelled = false;
     const currentUser = user;
-  
+
     async function loadProfileAvatar() {
       try {
         await ensureMyProfile({
           id: currentUser.id,
           email: currentUser.email ?? null,
         });
-  
+
         const profile = await getMyProfile(currentUser.id);
         if (cancelled) return;
-  
+
         const profileAvatar = profile?.avatar_url ?? null;
         setProfileAvatarUrl(profileAvatar);
-  
+
         const stored = readTryOnStorage();
-  
         if (!stored.avatarUrl && profileAvatar) {
           setAvatarUrl(profileAvatar);
-  
           writeTryOnStorage({
             avatarUrl: profileAvatar,
             clothingUrl: stored.clothingUrl,
@@ -162,21 +162,22 @@ export default function TryOnPage() {
         }
       }
     }
-  
+
     loadProfileAvatar();
-  
+
     return () => {
       cancelled = true;
     };
   }, [mounted, user]);
 
+  // Cleanup all blob URLs on unmount
   useEffect(() => {
     return () => {
-      if (resultUrl && resultUrl.startsWith("blob:")) {
-        URL.revokeObjectURL(resultUrl);
-      }
+      if (avatarBlobRef.current) URL.revokeObjectURL(avatarBlobRef.current);
+      if (clothingBlobRef.current) URL.revokeObjectURL(clothingBlobRef.current);
+      if (resultBlobRef.current) URL.revokeObjectURL(resultBlobRef.current);
     };
-  }, [resultUrl]);
+  }, []);
 
   const canGenerate = Boolean(avatarUrl && clothingUrl);
 
@@ -187,9 +188,7 @@ export default function TryOnPage() {
       .from("outfits")
       .upload(filePath, file);
 
-    if (error) {
-      throw new Error(error.message);
-    }
+    if (error) throw new Error(error.message);
 
     const { data: publicUrlData } = supabase.storage
       .from("outfits")
@@ -218,10 +217,7 @@ export default function TryOnPage() {
 
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d");
-
-    if (!ctx) {
-      throw new Error("Could not create canvas context.");
-    }
+    if (!ctx) throw new Error("Could not create canvas context.");
 
     const MAX_WIDTH = 900;
     const originalWidth = avatarImg.naturalWidth || avatarImg.width;
@@ -278,15 +274,18 @@ export default function TryOnPage() {
         mimeType: "image/jpeg",
       });
 
+      if (avatarBlobRef.current) {
+        URL.revokeObjectURL(avatarBlobRef.current);
+        avatarBlobRef.current = null;
+      }
+
       const objectUrl = URL.createObjectURL(compressed);
+      avatarBlobRef.current = objectUrl;
 
       setAvatar(compressed);
       setAvatarUrl(objectUrl);
 
-      writeTryOnStorage({
-        avatarUrl: objectUrl,
-        clothingUrl,
-      });
+      writeTryOnStorage({ avatarUrl: objectUrl, clothingUrl });
     } catch (err: any) {
       setError(err.message || "Failed to prepare avatar image.");
     } finally {
@@ -312,16 +311,19 @@ export default function TryOnPage() {
         mimeType: "image/jpeg",
       });
 
+      if (clothingBlobRef.current) {
+        URL.revokeObjectURL(clothingBlobRef.current);
+        clothingBlobRef.current = null;
+      }
+
       const objectUrl = URL.createObjectURL(compressed);
+      clothingBlobRef.current = objectUrl;
 
       setClothing(compressed);
       setClothingUrl(objectUrl);
       setClothingInputUrl("");
 
-      writeTryOnStorage({
-        avatarUrl,
-        clothingUrl: objectUrl,
-      });
+      writeTryOnStorage({ avatarUrl, clothingUrl: objectUrl });
     } catch (err: any) {
       setError(err.message || "Failed to prepare clothing image.");
     } finally {
@@ -337,14 +339,16 @@ export default function TryOnPage() {
       return;
     }
 
+    if (clothingBlobRef.current) {
+      URL.revokeObjectURL(clothingBlobRef.current);
+      clothingBlobRef.current = null;
+    }
+
     setError(null);
     setClothing(null);
     setClothingUrl(trimmed);
 
-    writeTryOnStorage({
-      avatarUrl,
-      clothingUrl: trimmed,
-    });
+    writeTryOnStorage({ avatarUrl, clothingUrl: trimmed });
   }
 
   async function saveItemToWishlist() {
@@ -361,11 +365,14 @@ export default function TryOnPage() {
 
       if (clothing && (!finalClothingUrl || finalClothingUrl.startsWith("blob:"))) {
         finalClothingUrl = await uploadFileToSupabase(clothing, "wishlist-items");
+
+        if (clothingBlobRef.current) {
+          URL.revokeObjectURL(clothingBlobRef.current);
+          clothingBlobRef.current = null;
+        }
+
         setClothingUrl(finalClothingUrl);
-        writeTryOnStorage({
-          avatarUrl,
-          clothingUrl: finalClothingUrl,
-        });
+        writeTryOnStorage({ avatarUrl, clothingUrl: finalClothingUrl });
       }
 
       if (!finalClothingUrl) {
@@ -405,11 +412,14 @@ export default function TryOnPage() {
 
       if (clothing && (!finalClothingUrl || finalClothingUrl.startsWith("blob:"))) {
         finalClothingUrl = await uploadFileToSupabase(clothing, "wardrobe-items");
+
+        if (clothingBlobRef.current) {
+          URL.revokeObjectURL(clothingBlobRef.current);
+          clothingBlobRef.current = null;
+        }
+
         setClothingUrl(finalClothingUrl);
-        writeTryOnStorage({
-          avatarUrl,
-          clothingUrl: finalClothingUrl,
-        });
+        writeTryOnStorage({ avatarUrl, clothingUrl: finalClothingUrl });
       }
 
       if (!finalClothingUrl) {
@@ -452,20 +462,21 @@ export default function TryOnPage() {
       }
 
       const currentKey = `${avatarUrl}-${clothingUrl}`;
-      if (currentKey === lastKey && resultUrl) {
-        return;
-      }
+      if (currentKey === lastKey && resultUrl) return;
 
       setIsGenerating(true);
       setLastKey(currentKey);
 
       const resultBlob = await createCompositePreview();
 
-      if (resultUrl && resultUrl.startsWith("blob:")) {
-        URL.revokeObjectURL(resultUrl);
+      if (resultBlobRef.current) {
+        URL.revokeObjectURL(resultBlobRef.current);
+        resultBlobRef.current = null;
       }
 
       const localResultUrl = URL.createObjectURL(resultBlob);
+      resultBlobRef.current = localResultUrl;
+
       setPendingResultBlob(resultBlob);
       setResultUrl(localResultUrl);
     } catch (err: any) {
@@ -508,8 +519,9 @@ export default function TryOnPage() {
         return;
       }
 
-      if (resultUrl && resultUrl.startsWith("blob:")) {
-        URL.revokeObjectURL(resultUrl);
+      if (resultBlobRef.current) {
+        URL.revokeObjectURL(resultBlobRef.current);
+        resultBlobRef.current = null;
       }
 
       setResultUrl(resultPublicUrl);
@@ -522,45 +534,47 @@ export default function TryOnPage() {
   }
 
   function discardGeneratedResult() {
-    if (resultUrl && resultUrl.startsWith("blob:")) {
-      URL.revokeObjectURL(resultUrl);
+    if (resultBlobRef.current) {
+      URL.revokeObjectURL(resultBlobRef.current);
+      resultBlobRef.current = null;
     }
 
     setPendingResultBlob(null);
     setResultUrl(null);
+    setLastKey(null);
     setError(null);
   }
 
   function clearAvatar() {
+    if (avatarBlobRef.current) {
+      URL.revokeObjectURL(avatarBlobRef.current);
+      avatarBlobRef.current = null;
+    }
+
     setAvatar(null);
 
     const nextAvatar = profileAvatarUrl ?? null;
     setAvatarUrl(nextAvatar);
 
-    writeTryOnStorage({
-      avatarUrl: nextAvatar,
-      clothingUrl,
-    });
-
+    writeTryOnStorage({ avatarUrl: nextAvatar, clothingUrl });
     localStorage.removeItem("selectedAvatar");
   }
 
   function clearClothing() {
+    if (clothingBlobRef.current) {
+      URL.revokeObjectURL(clothingBlobRef.current);
+      clothingBlobRef.current = null;
+    }
+
     setClothing(null);
     setClothingUrl(null);
     setClothingInputUrl("");
 
-    writeTryOnStorage({
-      avatarUrl,
-      clothingUrl: null,
-    });
-
+    writeTryOnStorage({ avatarUrl, clothingUrl: null });
     localStorage.removeItem("selectedClothing");
   }
 
-  if (!mounted) {
-    return null;
-  }
+  if (!mounted) return null;
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-black">
@@ -574,6 +588,7 @@ export default function TryOnPage() {
           </p>
         </div>
 
+        {/* Step 1 — Avatar */}
         <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-zinc-200/70 dark:bg-zinc-900 dark:ring-zinc-800">
           <div className="flex items-start gap-3">
             <SectionBadge value="1" />
@@ -590,7 +605,9 @@ export default function TryOnPage() {
           <div className="mt-4 space-y-3">
             <ImageUpload
               label="Your avatar photo"
-              helpText={isPreparingAvatar ? "Preparing image..." : "PNG, JPG, or WEBP (max 10MB)."}
+              helpText={
+                isPreparingAvatar ? "Preparing image..." : "PNG, JPG, or WEBP (max 10MB)."
+              }
               value={avatar}
               onChange={handleAvatarChange}
             />
@@ -610,7 +627,9 @@ export default function TryOnPage() {
                     onClick={clearAvatar}
                     className="w-full rounded-xl border border-zinc-300 px-4 py-2.5 text-sm font-medium text-zinc-900 dark:border-zinc-700 dark:text-zinc-50"
                   >
-                    {profileAvatarUrl ? "Use profile avatar" : "Remove avatar"}
+                    {profileAvatarUrl && avatarUrl !== profileAvatarUrl
+                      ? "Use profile avatar"
+                      : "Remove avatar"}
                   </button>
                 </div>
               </div>
@@ -622,6 +641,7 @@ export default function TryOnPage() {
           </div>
         </div>
 
+        {/* Step 2 — Clothing */}
         <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-zinc-200/70 dark:bg-zinc-900 dark:ring-zinc-800">
           <div className="flex items-start gap-3">
             <SectionBadge value="2" />
@@ -638,7 +658,9 @@ export default function TryOnPage() {
           <div className="mt-4 space-y-3">
             <ImageUpload
               label="Upload clothing item"
-              helpText={isPreparingClothing ? "Preparing image..." : "PNG, JPG, or WEBP (max 10MB)."}
+              helpText={
+                isPreparingClothing ? "Preparing image..." : "PNG, JPG, or WEBP (max 10MB)."
+              }
               value={clothing}
               onChange={handleClothingChange}
             />
@@ -690,7 +712,6 @@ export default function TryOnPage() {
               <ButtonLink href="/wardrobe" variant="secondary" className="w-full">
                 From wardrobe
               </ButtonLink>
-
               <ButtonLink href="/wishlist" variant="secondary" className="w-full">
                 From wishlist
               </ButtonLink>
@@ -724,6 +745,7 @@ export default function TryOnPage() {
           </div>
         )}
 
+        {/* Generate button */}
         <button
           onClick={onGenerate}
           disabled={!canGenerate || isGenerating || isPreparingAvatar || isPreparingClothing}
@@ -739,6 +761,7 @@ export default function TryOnPage() {
           )}
         </button>
 
+        {/* Step 3 — Result */}
         <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-zinc-200/70 dark:bg-zinc-900 dark:ring-zinc-800">
           <div className="flex items-start gap-3">
             <SectionBadge value="3" />

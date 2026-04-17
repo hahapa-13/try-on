@@ -74,15 +74,20 @@ export default function WardrobePage() {
       .from("outfits")
       .upload(filePath, file);
 
-    if (error) {
-      throw new Error(error.message);
-    }
+    if (error) throw new Error(error.message);
 
     const { data: publicUrlData } = supabase.storage
       .from("outfits")
       .getPublicUrl(data.path);
 
     return publicUrlData.publicUrl;
+  }
+
+  function getStoragePath(imageUrl: string): string | null {
+    const marker = "/object/public/outfits/";
+    const idx = imageUrl.indexOf(marker);
+    if (idx === -1) return null;
+    return imageUrl.slice(idx + marker.length);
   }
 
   async function handleAddItem() {
@@ -133,7 +138,7 @@ export default function WardrobePage() {
     }
   }
 
-  async function handleDelete(id: string) {
+  async function handleDelete(id: string, imageUrl: string) {
     try {
       setError(null);
       setDeletingId(id);
@@ -143,6 +148,11 @@ export default function WardrobePage() {
       if (error) {
         setError(error.message);
         return;
+      }
+
+      const path = getStoragePath(imageUrl);
+      if (path) {
+        await supabase.storage.from("outfits").remove([path]);
       }
 
       setItems((prev) => prev.filter((item) => item.id !== id));
@@ -316,7 +326,7 @@ export default function WardrobePage() {
 
                     <button
                       type="button"
-                      onClick={() => handleDelete(item.id)}
+                      onClick={() => handleDelete(item.id, item.image_url)}
                       disabled={deletingId === item.id}
                       className="rounded-xl border border-zinc-300 px-3 py-2.5 text-sm font-medium text-zinc-900 dark:border-zinc-700 dark:text-zinc-50"
                     >

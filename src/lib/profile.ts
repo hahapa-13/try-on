@@ -8,7 +8,7 @@ export type ProfileRow = {
   updated_at: string;
 };
 
-export async function getMyProfile(userId: string) {
+export async function getMyProfile(userId: string): Promise<ProfileRow | null> {
   const supabase = createSupabaseBrowserClient();
 
   const { data, error } = await supabase
@@ -17,53 +17,59 @@ export async function getMyProfile(userId: string) {
     .eq("id", userId)
     .maybeSingle();
 
-  if (error) {
-    throw new Error(error.message);
-  }
+  if (error) throw new Error(error.message);
 
   return data as ProfileRow | null;
 }
 
-export async function ensureMyProfile(user: { id: string; email?: string | null }) {
+export async function ensureMyProfile(user: {
+  id: string;
+  email?: string | null;
+}): Promise<ProfileRow> {
   const supabase = createSupabaseBrowserClient();
 
-  const existing = await getMyProfile(user.id);
-  if (existing) return existing;
-
-  const { data, error } = await supabase
-    .from("profiles")
-    .insert({
+  const { error } = await supabase.from("profiles").upsert(
+    {
       id: user.id,
       email: user.email ?? null,
-    })
-    .select("*")
-    .single();
+    },
+    {
+      onConflict: "id",
+    }
+  );
 
-  if (error) {
-    throw new Error(error.message);
+  if (error) throw new Error(error.message);
+
+  const profile = await getMyProfile(user.id);
+
+  if (!profile) {
+    throw new Error("Failed to load profile after upsert.");
   }
 
-  return data as ProfileRow;
+  return profile;
 }
 
-export async function updateMyAvatar(userId: string, avatarUrl: string | null) {
+export async function updateMyAvatar(
+  userId: string,
+  avatarUrl: string | null
+): Promise<ProfileRow> {
   const supabase = createSupabaseBrowserClient();
 
-  const { data, error } = await supabase
-    .from("profiles")
-    .upsert(
-      {
-        id: userId,
-        avatar_url: avatarUrl,
-      },
-      { onConflict: "id" }
-    )
-    .select("*")
-    .single();
+  const { error } = await supabase.from("profiles").upsert(
+    {
+      id: userId,
+      avatar_url: avatarUrl,
+    },
+    { onConflict: "id" }
+  );
 
-  if (error) {
-    throw new Error(error.message);
+  if (error) throw new Error(error.message);
+
+  const profile = await getMyProfile(userId);
+
+  if (!profile) {
+    throw new Error("Failed to load profile after avatar update.");
   }
 
-  return data as ProfileRow;
+  return profile;
 }

@@ -75,15 +75,20 @@ export default function WishlistPage() {
       .from("outfits")
       .upload(filePath, file);
 
-    if (error) {
-      throw new Error(error.message);
-    }
+    if (error) throw new Error(error.message);
 
     const { data: publicUrlData } = supabase.storage
       .from("outfits")
       .getPublicUrl(data.path);
 
     return publicUrlData.publicUrl;
+  }
+
+  function getStoragePath(imageUrl: string): string | null {
+    const marker = "/object/public/outfits/";
+    const idx = imageUrl.indexOf(marker);
+    if (idx === -1) return null;
+    return imageUrl.slice(idx + marker.length);
   }
 
   async function handleAddItem() {
@@ -134,7 +139,7 @@ export default function WishlistPage() {
     }
   }
 
-  async function handleDelete(id: string) {
+  async function handleDelete(id: string, imageUrl: string) {
     try {
       setError(null);
       setDeletingId(id);
@@ -146,6 +151,11 @@ export default function WishlistPage() {
         return;
       }
 
+      const path = getStoragePath(imageUrl);
+      if (path) {
+        await supabase.storage.from("outfits").remove([path]);
+      }
+
       setItems((prev) => prev.filter((item) => item.id !== id));
     } catch (err: any) {
       setError(err.message || "Failed to delete item.");
@@ -154,39 +164,48 @@ export default function WishlistPage() {
     }
   }
 
+  async function moveToWardrobe(item: WishlistItem) {
+    if (!user) {
+      setError("You must be logged in.");
+      return;
+    }
+
+    // Insert into wardrobe first
+    const { error: insertError } = await supabase.from("wardrobe").insert({
+      user_id: user.id,
+      image_url: item.image_url,
+      title: item.title ?? null,
+      type: item.type ?? null,
+    });
+
+    if (insertError) throw new Error(insertError.message);
+
+    // Only delete from wishlist if insert succeeded
+    const { error: deleteError } = await supabase
+      .from("wishlist")
+      .delete()
+      .eq("id", item.id);
+
+    if (deleteError) {
+      // Rollback: remove the wardrobe row we just inserted
+      await supabase
+        .from("wardrobe")
+        .delete()
+        .eq("user_id", user.id)
+        .eq("image_url", item.image_url);
+
+      throw new Error(deleteError.message);
+    }
+  }
+
   async function handleMoveToWardrobe(item: WishlistItem) {
     try {
-      if (!user) {
-        setError("You must be logged in.");
-        return;
-      }
-
       setError(null);
       setMovingId(item.id);
 
-      const { error: insertError } = await supabase.from("wardrobe").insert({
-        user_id: user.id,
-        image_url: item.image_url,
-        title: item.title ?? null,
-        type: item.type ?? null,
-      });
+      await moveToWardrobe(item);
 
-      if (insertError) {
-        setError(insertError.message);
-        return;
-      }
-
-      const { error: deleteError } = await supabase
-        .from("wishlist")
-        .delete()
-        .eq("id", item.id);
-
-      if (deleteError) {
-        setError(deleteError.message);
-        return;
-      }
-
-      setItems((prev) => prev.filter((wishlistItem) => wishlistItem.id !== item.id));
+      setItems((prev) => prev.filter((w) => w.id !== item.id));
     } catch (err: any) {
       setError(err.message || "Failed to move item to wardrobe.");
     } finally {
@@ -366,7 +385,7 @@ export default function WishlistPage() {
 
                     <button
                       type="button"
-                      onClick={() => handleDelete(item.id)}
+                      onClick={() => handleDelete(item.id, item.image_url)}
                       disabled={deletingId === item.id}
                       className="rounded-xl border border-zinc-300 px-3 py-2.5 text-sm font-medium text-zinc-900 dark:border-zinc-700 dark:text-zinc-50"
                     >
