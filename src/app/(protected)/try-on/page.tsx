@@ -7,6 +7,7 @@ import { useUser } from "@/hooks/useUser";
 import { ImageUpload } from "@/components/ImageUpload";
 import { ButtonLink } from "@/components/ui/Button";
 import { compressImage } from "@/lib/image";
+import { ensureMyProfile, getMyProfile } from "@/lib/profile";
 
 type TryOnStorage = {
   avatarUrl: string | null;
@@ -82,6 +83,7 @@ export default function TryOnPage() {
   const [clothing, setClothing] = useState<File | null>(null);
 
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [profileAvatarUrl, setProfileAvatarUrl] = useState<string | null>(null);
   const [clothingUrl, setClothingUrl] = useState<string | null>(null);
   const [clothingInputUrl, setClothingInputUrl] = useState("");
 
@@ -109,11 +111,8 @@ export default function TryOnPage() {
     const selectedAvatar = localStorage.getItem("selectedAvatar");
     const selectedClothing = localStorage.getItem("selectedClothing");
 
-    const nextAvatarUrl = selectedAvatar ?? stored.avatarUrl ?? null;
-    const nextClothingUrl = selectedClothing ?? null;
-
-    setAvatar(null);
-    setClothing(null);
+    const nextAvatarUrl = selectedAvatar ?? stored.avatarUrl;
+    const nextClothingUrl = selectedClothing ?? stored.clothingUrl;
 
     setAvatarUrl(nextAvatarUrl);
     setClothingUrl(nextClothingUrl);
@@ -121,12 +120,54 @@ export default function TryOnPage() {
 
     writeTryOnStorage({
       avatarUrl: nextAvatarUrl,
-      clothingUrl: null,
+      clothingUrl: nextClothingUrl,
     });
 
     if (selectedAvatar) localStorage.removeItem("selectedAvatar");
     if (selectedClothing) localStorage.removeItem("selectedClothing");
   }, [mounted]);
+
+  useEffect(() => {
+    if (!mounted || !user) return;
+
+    let cancelled = false;
+
+    async function loadProfileAvatar() {
+      try {
+        await ensureMyProfile({
+          id: user.id,
+          email: user.email ?? null,
+        });
+
+        const profile = await getMyProfile(user.id);
+        if (cancelled) return;
+
+        const profileAvatar = profile?.avatar_url ?? null;
+        setProfileAvatarUrl(profileAvatar);
+
+        const stored = readTryOnStorage();
+
+        if (!stored.avatarUrl && profileAvatar) {
+          setAvatarUrl(profileAvatar);
+
+          writeTryOnStorage({
+            avatarUrl: profileAvatar,
+            clothingUrl: stored.clothingUrl,
+          });
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          setError(err.message || "Failed to load profile avatar.");
+        }
+      }
+    }
+
+    loadProfileAvatar();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [mounted, user]);
 
   useEffect(() => {
     return () => {
@@ -236,14 +277,13 @@ export default function TryOnPage() {
         mimeType: "image/jpeg",
       });
 
+      const objectUrl = URL.createObjectURL(compressed);
+
       setAvatar(compressed);
-
-      const uploadedAvatarUrl = await uploadFileToSupabase(compressed, "avatars");
-
-      setAvatarUrl(uploadedAvatarUrl);
+      setAvatarUrl(objectUrl);
 
       writeTryOnStorage({
-        avatarUrl: uploadedAvatarUrl,
+        avatarUrl: objectUrl,
         clothingUrl,
       });
     } catch (err: any) {
@@ -473,16 +513,6 @@ export default function TryOnPage() {
 
       setResultUrl(resultPublicUrl);
       setPendingResultBlob(null);
-
-      writeTryOnStorage({
-        avatarUrl,
-        clothingUrl: null,
-      });
-
-      setClothing(null);
-      setClothingUrl(null);
-      setClothingInputUrl("");
-      localStorage.removeItem("selectedClothing");
     } catch (err: any) {
       setError(err.message || "Something went wrong.");
     } finally {
@@ -498,24 +528,16 @@ export default function TryOnPage() {
     setPendingResultBlob(null);
     setResultUrl(null);
     setError(null);
-
-    writeTryOnStorage({
-      avatarUrl,
-      clothingUrl: null,
-    });
-
-    setClothing(null);
-    setClothingUrl(null);
-    setClothingInputUrl("");
-    localStorage.removeItem("selectedClothing");
   }
 
   function clearAvatar() {
     setAvatar(null);
-    setAvatarUrl(null);
+
+    const nextAvatar = profileAvatarUrl ?? null;
+    setAvatarUrl(nextAvatar);
 
     writeTryOnStorage({
-      avatarUrl: null,
+      avatarUrl: nextAvatar,
       clothingUrl,
     });
 
@@ -587,7 +609,7 @@ export default function TryOnPage() {
                     onClick={clearAvatar}
                     className="w-full rounded-xl border border-zinc-300 px-4 py-2.5 text-sm font-medium text-zinc-900 dark:border-zinc-700 dark:text-zinc-50"
                   >
-                    Remove avatar
+                    {profileAvatarUrl ? "Use profile avatar" : "Remove avatar"}
                   </button>
                 </div>
               </div>
