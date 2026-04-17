@@ -59,7 +59,19 @@ function readTryOnStorage(): TryOnStorage {
 
 function writeTryOnStorage(data: TryOnStorage) {
   if (typeof window === "undefined") return;
-  sessionStorage.setItem(TRY_ON_STORAGE_KEY, JSON.stringify(data));
+  // Safety: never persist blob URLs — they are tab-local and die on navigation
+  const safe = {
+    ...data,
+    avatarUrl:
+      data.avatarUrl && data.avatarUrl.startsWith("blob:")
+        ? null
+        : data.avatarUrl,
+    clothingUrl:
+      data.clothingUrl && data.clothingUrl.startsWith("blob:")
+        ? null
+        : data.clothingUrl,
+  };
+  sessionStorage.setItem(TRY_ON_STORAGE_KEY, JSON.stringify(safe));
 }
 
 // ---------------------------------------------------------------------------
@@ -106,25 +118,24 @@ export default function TryOnPage() {
 
   const [mounted, setMounted] = useState(false);
 
-  // Reset profileEnsuredRef when user.id changes so profile loading
-  // re-runs correctly if auth user changes in the same browser session.
+  // profileEnsuredRef tracks the user.id it was last run for
+  // so it resets automatically when a different user signs in.
   const profileEnsuredRef = useRef<string | null>(null);
 
   // Avatar
-  const [avatar, setAvatar] = useState<File | null>(null);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarSource, setAvatarSource] = useState<AvatarSource>("none");
   const [avatarRemoved, setAvatarRemoved] = useState(false);
   const [profileAvatarUrl, setProfileAvatarUrl] = useState<string | null>(null);
+  const [isPreparingAvatar, setIsPreparingAvatar] = useState(false);
 
   // Clothing
   const [clothing, setClothing] = useState<File | null>(null);
   const [clothingUrl, setClothingUrl] = useState<string | null>(null);
   const [clothingInputUrl, setClothingInputUrl] = useState("");
-
-  // Loading / saving flags
-  const [isPreparingAvatar, setIsPreparingAvatar] = useState(false);
   const [isPreparingClothing, setIsPreparingClothing] = useState(false);
+
+  // Saving flags
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSavingWishlist, setIsSavingWishlist] = useState(false);
   const [isSavingWardrobe, setIsSavingWardrobe] = useState(false);
@@ -136,7 +147,7 @@ export default function TryOnPage() {
   const [pendingResultBlob, setPendingResultBlob] = useState<Blob | null>(null);
   const [lastKey, setLastKey] = useState<string | null>(null);
 
-  // Blob URL refs for cleanup
+  // Blob URL refs — only used for transient in-memory preview, never persisted
   const avatarBlobRef = useRef<string | null>(null);
   const clothingBlobRef = useRef<string | null>(null);
   const resultBlobRef = useRef<string | null>(null);
@@ -163,9 +174,7 @@ export default function TryOnPage() {
     localStorage.removeItem("selectedAvatar");
 
     if (localStorageAvatar) {
-      // Highest priority: handoff from outfits page
-      // setAvatar(null) — no local File associated with a remote handoff
-      setAvatar(null);
+      // Handoff from outfits page — always a durable remote URL
       setAvatarUrl(localStorageAvatar);
       setAvatarSource("outfits-selection");
       setAvatarRemoved(false);
@@ -176,23 +185,16 @@ export default function TryOnPage() {
         avatarRemoved: false,
       });
     } else if (stored.avatarRemoved) {
-      // User explicitly removed avatar — restore that decision into React state
-      setAvatar(null);
       setAvatarUrl(null);
       setAvatarSource("none");
       setAvatarRemoved(true);
     } else if (stored.avatarUrl) {
-      // Restore from sessionStorage.
-      // If the source was not a local-upload, clear the File state —
-      // there is no File object to restore from sessionStorage.
-      if (stored.avatarSource !== "local-upload") {
-        setAvatar(null);
-      }
+      // Only restore if it is a durable URL (blob: would be broken here anyway,
+      // but writeTryOnStorage already guards against persisting blob: URLs)
       setAvatarUrl(stored.avatarUrl);
       setAvatarSource(stored.avatarSource !== "none" ? stored.avatarSource : "session");
       setAvatarRemoved(false);
     }
-    // else: nothing set yet — profile fallback handled after user loads
 
     // --- Clothing ---
     const localStorageClothing = localStorage.getItem("selectedClothing");
@@ -211,20 +213,14 @@ export default function TryOnPage() {
   }, [mounted]);
 
   // ---------------------------------------------------------------------------
-  // After user loads: load profile avatar as fallback
-  // profileEnsuredRef now tracks the user.id it was last run for,
-  // so it resets automatically when a different user signs in.
+  // Load profile avatar as fallback once per user session
   // ---------------------------------------------------------------------------
 
   useEffect(() => {
     if (!mounted || !user) return;
-
-    // If we already ensured profile for this exact user, skip
     if (profileEnsuredRef.current === user.id) return;
 
-    // Mark as ensured for this user id
     profileEnsuredRef.current = user.id;
-
     let cancelled = false;
 
     async function loadProfileAvatar() {
@@ -242,13 +238,8 @@ export default function TryOnPage() {
 
         if (!profileAvatar) return;
 
-        // Read fresh from sessionStorage — state may not have settled yet
         const stored = readTryOnStorage();
-
-        // Only fall back if nothing is active AND user has not explicitly removed
         if (!stored.avatarUrl && !stored.avatarRemoved) {
-          // Profile fallback is always a remote URL — no File associated
-          setAvatar(null);
           setAvatarUrl(profileAvatar);
           setAvatarSource("profile");
           setAvatarRemoved(false);
@@ -290,17 +281,13 @@ export default function TryOnPage() {
 
   const canGenerate = Boolean(avatarUrl && clothingUrl);
 
-  // Show "Use profile avatar" only when:
-  // - user has NOT explicitly removed avatar this session
-  // - a profile avatar exists
-  // - profile avatar is not already the active avatar
   const showUseProfileAvatarButton =
     !avatarRemoved &&
     profileAvatarUrl !== null &&
     avatarUrl !== profileAvatarUrl;
 
   // ---------------------------------------------------------------------------
-  // Upload helper
+  // Supabase Storage upload helper
   // ---------------------------------------------------------------------------
 
   async function uploadFileToSupabase(file: File, folder: string): Promise<string> {
@@ -394,6 +381,7 @@ export default function TryOnPage() {
     try {
       setIsPreparingAvatar(true);
 
+      // 1. Compress
       const compressed = await compressImage(file, {
         maxWidth: 1200,
         maxHeight: 1600,
@@ -401,28 +389,50 @@ export default function TryOnPage() {
         mimeType: "image/jpeg",
       });
 
+      // 2. Show a transient blob preview immediately while upload runs
+      if (avatarBlobRef.current) {
+        URL.revokeObjectURL(avatarBlobRef.current);
+        avatarBlobRef.current = null;
+      }
+      const blobPreviewUrl = URL.createObjectURL(compressed);
+      avatarBlobRef.current = blobPreviewUrl;
+      setAvatarUrl(blobPreviewUrl); // temporary — gives instant feedback
+      setAvatarSource("local-upload");
+      setAvatarRemoved(false);
+
+      // 3. Upload to Supabase Storage — get a durable public URL
+      const durableUrl = await uploadFileToSupabase(
+        compressed,
+        "avatar-uploads"
+      );
+
+      // 4. Replace blob preview with durable URL, revoke the blob
       if (avatarBlobRef.current) {
         URL.revokeObjectURL(avatarBlobRef.current);
         avatarBlobRef.current = null;
       }
 
-      const objectUrl = URL.createObjectURL(compressed);
-      avatarBlobRef.current = objectUrl;
-
-      setAvatar(compressed); // local-upload is the only case where File is set
-      setAvatarUrl(objectUrl);
+      setAvatarUrl(durableUrl);
       setAvatarSource("local-upload");
       setAvatarRemoved(false);
 
+      // 5. Persist only the durable URL
       const stored = readTryOnStorage();
       writeTryOnStorage({
         ...stored,
-        avatarUrl: objectUrl,
+        avatarUrl: durableUrl,
         avatarSource: "local-upload",
         avatarRemoved: false,
       });
     } catch (err: any) {
-      setError(err.message || "Failed to prepare avatar image.");
+      // On failure, clear the broken blob preview
+      if (avatarBlobRef.current) {
+        URL.revokeObjectURL(avatarBlobRef.current);
+        avatarBlobRef.current = null;
+      }
+      setAvatarUrl(null);
+      setAvatarSource("none");
+      setError(err.message || "Failed to upload avatar image.");
     } finally {
       setIsPreparingAvatar(false);
     }
@@ -436,8 +446,6 @@ export default function TryOnPage() {
       avatarBlobRef.current = null;
     }
 
-    // Profile avatar is always a remote URL — no File associated
-    setAvatar(null);
     setAvatarUrl(profileAvatarUrl);
     setAvatarSource("profile");
     setAvatarRemoved(false);
@@ -457,7 +465,6 @@ export default function TryOnPage() {
       avatarBlobRef.current = null;
     }
 
-    setAvatar(null);
     setAvatarUrl(null);
     setAvatarSource("none");
     setAvatarRemoved(true);
@@ -494,22 +501,41 @@ export default function TryOnPage() {
         mimeType: "image/jpeg",
       });
 
+      // Transient blob preview
+      if (clothingBlobRef.current) {
+        URL.revokeObjectURL(clothingBlobRef.current);
+        clothingBlobRef.current = null;
+      }
+      const blobPreviewUrl = URL.createObjectURL(compressed);
+      clothingBlobRef.current = blobPreviewUrl;
+      setClothing(compressed);
+      setClothingUrl(blobPreviewUrl);
+      setClothingInputUrl("");
+
+      // Upload for durable URL
+      const durableUrl = await uploadFileToSupabase(
+        compressed,
+        "clothing-uploads"
+      );
+
       if (clothingBlobRef.current) {
         URL.revokeObjectURL(clothingBlobRef.current);
         clothingBlobRef.current = null;
       }
 
-      const objectUrl = URL.createObjectURL(compressed);
-      clothingBlobRef.current = objectUrl;
-
-      setClothing(compressed);
-      setClothingUrl(objectUrl);
-      setClothingInputUrl("");
+      setClothing(null); // file uploaded — no longer needed in memory
+      setClothingUrl(durableUrl);
 
       const stored = readTryOnStorage();
-      writeTryOnStorage({ ...stored, clothingUrl: objectUrl });
+      writeTryOnStorage({ ...stored, clothingUrl: durableUrl });
     } catch (err: any) {
-      setError(err.message || "Failed to prepare clothing image.");
+      if (clothingBlobRef.current) {
+        URL.revokeObjectURL(clothingBlobRef.current);
+        clothingBlobRef.current = null;
+      }
+      setClothing(null);
+      setClothingUrl(null);
+      setError(err.message || "Failed to upload clothing image.");
     } finally {
       setIsPreparingClothing(false);
     }
@@ -551,7 +577,7 @@ export default function TryOnPage() {
   }
 
   // ---------------------------------------------------------------------------
-  // Save handlers
+  // Save to wishlist / wardrobe
   // ---------------------------------------------------------------------------
 
   async function saveItemToWishlist() {
@@ -564,29 +590,16 @@ export default function TryOnPage() {
         return;
       }
 
-      let finalClothingUrl = clothingUrl;
-
-      if (clothing && (!finalClothingUrl || finalClothingUrl.startsWith("blob:"))) {
-        finalClothingUrl = await uploadFileToSupabase(clothing, "wishlist-items");
-
-        if (clothingBlobRef.current) {
-          URL.revokeObjectURL(clothingBlobRef.current);
-          clothingBlobRef.current = null;
-        }
-
-        setClothingUrl(finalClothingUrl);
-        const stored = readTryOnStorage();
-        writeTryOnStorage({ ...stored, clothingUrl: finalClothingUrl });
-      }
-
-      if (!finalClothingUrl) {
-        setError("Please select a clothing item first.");
+      // clothingUrl is always a durable URL at this point
+      // (blob uploads are resolved before setting clothingUrl)
+      if (!clothingUrl || clothingUrl.startsWith("blob:")) {
+        setError("Please wait for the clothing image to finish uploading.");
         return;
       }
 
       const { error } = await supabase.from("wishlist").insert({
         user_id: user.id,
-        image_url: finalClothingUrl,
+        image_url: clothingUrl,
       });
 
       if (error) {
@@ -612,29 +625,14 @@ export default function TryOnPage() {
         return;
       }
 
-      let finalClothingUrl = clothingUrl;
-
-      if (clothing && (!finalClothingUrl || finalClothingUrl.startsWith("blob:"))) {
-        finalClothingUrl = await uploadFileToSupabase(clothing, "wardrobe-items");
-
-        if (clothingBlobRef.current) {
-          URL.revokeObjectURL(clothingBlobRef.current);
-          clothingBlobRef.current = null;
-        }
-
-        setClothingUrl(finalClothingUrl);
-        const stored = readTryOnStorage();
-        writeTryOnStorage({ ...stored, clothingUrl: finalClothingUrl });
-      }
-
-      if (!finalClothingUrl) {
-        setError("Please select a clothing item first.");
+      if (!clothingUrl || clothingUrl.startsWith("blob:")) {
+        setError("Please wait for the clothing image to finish uploading.");
         return;
       }
 
       const { error } = await supabase.from("wardrobe").insert({
         user_id: user.id,
-        image_url: finalClothingUrl,
+        image_url: clothingUrl,
       });
 
       if (error) {
@@ -650,6 +648,10 @@ export default function TryOnPage() {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Generate preview
+  // ---------------------------------------------------------------------------
+
   async function onGenerate() {
     if (isGenerating) return;
 
@@ -662,6 +664,10 @@ export default function TryOnPage() {
       }
       if (!clothingUrl) {
         setError("Please select a clothing item.");
+        return;
+      }
+      if (avatarUrl.startsWith("blob:") || clothingUrl.startsWith("blob:")) {
+        setError("Please wait for images to finish uploading.");
         return;
       }
 
@@ -788,13 +794,15 @@ export default function TryOnPage() {
 
           <div className="mt-4 space-y-3">
             {/*
-              value={null} always — prevents ImageUpload rendering its own
-              internal preview alongside our controlled preview card below.
+              value={null} always — prevents ImageUpload's internal preview
+              from rendering alongside our single controlled preview card.
             */}
             <ImageUpload
               label="Your avatar photo"
               helpText={
-                isPreparingAvatar ? "Preparing image..." : "PNG, JPG, or WEBP (max 10MB)."
+                isPreparingAvatar
+                  ? "Uploading avatar..."
+                  : "PNG, JPG, or WEBP (max 10MB)."
               }
               value={null}
               onChange={handleAvatarChange}
@@ -804,17 +812,26 @@ export default function TryOnPage() {
             {avatarUrl && (
               <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
                 <div className="aspect-[4/5] w-full">
-                  <img
-                    src={avatarUrl}
-                    alt="Selected avatar"
-                    className="block h-full w-full object-contain"
-                    loading="lazy"
-                  />
+                  {isPreparingAvatar ? (
+                    <div className="flex h-full w-full items-center justify-center bg-zinc-100 dark:bg-zinc-900">
+                      <span className="text-sm text-zinc-500 dark:text-zinc-400">
+                        Uploading…
+                      </span>
+                    </div>
+                  ) : (
+                    <img
+                      src={avatarUrl}
+                      alt="Selected avatar"
+                      className="block h-full w-full object-contain"
+                      loading="lazy"
+                    />
+                  )}
                 </div>
                 <div className="flex flex-col gap-2 border-t border-zinc-200 p-3 dark:border-zinc-800">
                   <button
                     onClick={clearAvatar}
-                    className="w-full rounded-xl border border-zinc-300 px-4 py-2.5 text-sm font-medium text-zinc-900 dark:border-zinc-700 dark:text-zinc-50"
+                    disabled={isPreparingAvatar}
+                    className="w-full rounded-xl border border-zinc-300 px-4 py-2.5 text-sm font-medium text-zinc-900 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50"
                   >
                     Remove avatar
                   </button>
@@ -822,7 +839,8 @@ export default function TryOnPage() {
                   {showUseProfileAvatarButton && (
                     <button
                       onClick={applyProfileAvatar}
-                      className="w-full rounded-xl border border-zinc-300 px-4 py-2.5 text-sm font-medium text-zinc-900 dark:border-zinc-700 dark:text-zinc-50"
+                      disabled={isPreparingAvatar}
+                      className="w-full rounded-xl border border-zinc-300 px-4 py-2.5 text-sm font-medium text-zinc-900 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50"
                     >
                       Use profile avatar
                     </button>
@@ -867,7 +885,9 @@ export default function TryOnPage() {
             <ImageUpload
               label="Upload clothing item"
               helpText={
-                isPreparingClothing ? "Preparing image..." : "PNG, JPG, or WEBP (max 10MB)."
+                isPreparingClothing
+                  ? "Uploading clothing..."
+                  : "PNG, JPG, or WEBP (max 10MB)."
               }
               value={null}
               onChange={handleClothingChange}
@@ -899,17 +919,26 @@ export default function TryOnPage() {
             {clothingUrl && (
               <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
                 <div className="aspect-[4/5] w-full">
-                  <img
-                    src={clothingUrl}
-                    alt="Selected clothing"
-                    className="block h-full w-full object-contain"
-                    loading="lazy"
-                  />
+                  {isPreparingClothing ? (
+                    <div className="flex h-full w-full items-center justify-center bg-zinc-100 dark:bg-zinc-900">
+                      <span className="text-sm text-zinc-500 dark:text-zinc-400">
+                        Uploading…
+                      </span>
+                    </div>
+                  ) : (
+                    <img
+                      src={clothingUrl}
+                      alt="Selected clothing"
+                      className="block h-full w-full object-contain"
+                      loading="lazy"
+                    />
+                  )}
                 </div>
                 <div className="border-t border-zinc-200 p-3 dark:border-zinc-800">
                   <button
                     onClick={clearClothing}
-                    className="w-full rounded-xl border border-zinc-300 px-4 py-2.5 text-sm font-medium text-zinc-900 dark:border-zinc-700 dark:text-zinc-50"
+                    disabled={isPreparingClothing}
+                    className="w-full rounded-xl border border-zinc-300 px-4 py-2.5 text-sm font-medium text-zinc-900 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50"
                   >
                     Remove clothing
                   </button>
@@ -958,7 +987,12 @@ export default function TryOnPage() {
         {/* Generate button */}
         <button
           onClick={onGenerate}
-          disabled={!canGenerate || isGenerating || isPreparingAvatar || isPreparingClothing}
+          disabled={
+            !canGenerate ||
+            isGenerating ||
+            isPreparingAvatar ||
+            isPreparingClothing
+          }
           className="inline-flex min-h-12 w-full items-center justify-center rounded-2xl bg-black px-4 py-3 text-sm font-medium text-white shadow-sm transition disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900"
         >
           {isGenerating ? (
