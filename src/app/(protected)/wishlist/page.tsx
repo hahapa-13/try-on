@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type WishlistItem = {
   id: string;
@@ -12,7 +12,7 @@ type WishlistItem = {
 };
 
 export default function WishlistPage() {
-  const supabase = useMemo(() => createClient(), []);
+  const supabase = useMemo(() => createSupabaseBrowserClient(), []);
 
   const [items, setItems] = useState<WishlistItem[]>([]);
   const [loading, setLoading] = useState(true);
