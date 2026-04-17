@@ -1,311 +1,334 @@
+/* eslint-disable @next/next/no-img-element */
 "use client";
 
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { useUser } from "@/hooks/useUser";
+import { ImageUpload } from "@/components/ImageUpload";
 
 type WardrobeItem = {
   id: string;
-  user_id: string;
   image_url: string;
-  title: string | null;
-  type: string | null;
   created_at: string;
+  title?: string | null;
+  type?: string | null;
 };
 
 export default function WardrobePage() {
-  const router = useRouter();
+  const { user, loading } = useUser();
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
 
   const [items, setItems] = useState<WardrobeItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [uploading, setUploading] = useState(false);
+  const [pageLoading, setPageLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newFile, setNewFile] = useState<File | null>(null);
+  const [newUrl, setNewUrl] = useState("");
+  const [title, setTitle] = useState("");
+  const [type, setType] = useState("");
+  const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  const [file, setFile] = useState<File | null>(null);
-  const [computerTitle, setComputerTitle] = useState("");
-  const [computerType, setComputerType] = useState("");
+  useEffect(() => {
+    if (!loading && user) {
+      loadItems();
+    }
 
-  const [imageUrl, setImageUrl] = useState("");
-  const [urlTitle, setUrlTitle] = useState("");
-  const [urlType, setUrlType] = useState("");
+    if (!loading && !user) {
+      setPageLoading(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, user]);
 
   async function loadItems() {
-    setLoading(true);
+    try {
+      setPageLoading(true);
+      setError(null);
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+      if (!user) return;
 
-    if (!user) {
-      router.push("/auth");
-      return;
+      const { data, error } = await supabase
+        .from("wardrobe")
+        .select("id, image_url, created_at, title, type")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        setError(error.message);
+        return;
+      }
+
+      setItems((data ?? []) as WardrobeItem[]);
+    } catch (err: any) {
+      setError(err.message || "Failed to load wardrobe.");
+    } finally {
+      setPageLoading(false);
     }
-
-    const { data, error } = await supabase
-      .from("wardrobe")
-      .select("*")
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: false });
-
-    if (!error && data) {
-      setItems(data);
-    }
-
-    setLoading(false);
   }
 
-  useEffect(() => {
-    loadItems();
-  }, []);
+  async function uploadFileToSupabase(file: File) {
+    const filePath = `wardrobe-items/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
 
-  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const selectedFile = event.target.files?.[0] ?? null;
-    setFile(selectedFile);
-  }
-
-  async function handleAddFromComputer() {
-    if (!file) {
-      alert("Please choose a file first.");
-      return;
-    }
-
-    setUploading(true);
-
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      router.push("/auth");
-      return;
-    }
-
-    const fileExt = file.name.split(".").pop() || "jpg";
-    const filePath = `${user.id}/${Date.now()}.${fileExt}`;
-
-    const { error: uploadError } = await supabase.storage
+    const { data, error } = await supabase.storage
       .from("outfits")
       .upload(filePath, file);
 
-    if (uploadError) {
-      alert(uploadError.message);
-      setUploading(false);
-      return;
+    if (error) {
+      throw new Error(error.message);
     }
 
     const { data: publicUrlData } = supabase.storage
       .from("outfits")
-      .getPublicUrl(filePath);
+      .getPublicUrl(data.path);
 
-    const publicUrl = publicUrlData.publicUrl;
-
-    const { error: insertError } = await supabase.from("wardrobe").insert({
-      user_id: user.id,
-      image_url: publicUrl,
-      title: computerTitle || "Untitled item",
-      type: computerType || null,
-    });
-
-    if (insertError) {
-      alert(insertError.message);
-      setUploading(false);
-      return;
-    }
-
-    setFile(null);
-    setComputerTitle("");
-    setComputerType("");
-    await loadItems();
-    setUploading(false);
+    return publicUrlData.publicUrl;
   }
 
-  async function handleAddFromUrl() {
-    if (!imageUrl.trim()) {
-      alert("Please enter an image URL.");
-      return;
+  async function handleAddItem() {
+    try {
+      setError(null);
+
+      if (!user) {
+        setError("You must be logged in.");
+        return;
+      }
+
+      if (!newFile && !newUrl.trim()) {
+        setError("Please upload an image or paste an image URL.");
+        return;
+      }
+
+      setSaving(true);
+
+      let imageUrl = newUrl.trim();
+
+      if (newFile) {
+        imageUrl = await uploadFileToSupabase(newFile);
+      }
+
+      const { error } = await supabase.from("wardrobe").insert({
+        user_id: user.id,
+        image_url: imageUrl,
+        title: title.trim() || null,
+        type: type.trim() || null,
+      });
+
+      if (error) {
+        setError(error.message);
+        return;
+      }
+
+      setNewFile(null);
+      setNewUrl("");
+      setTitle("");
+      setType("");
+      setShowAddForm(false);
+
+      await loadItems();
+    } catch (err: any) {
+      setError(err.message || "Failed to add item.");
+    } finally {
+      setSaving(false);
     }
-
-    setUploading(true);
-
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      router.push("/auth");
-      return;
-    }
-
-    const { error } = await supabase.from("wardrobe").insert({
-      user_id: user.id,
-      image_url: imageUrl.trim(),
-      title: urlTitle || "Untitled item",
-      type: urlType || null,
-    });
-
-    if (error) {
-      alert(error.message);
-      setUploading(false);
-      return;
-    }
-
-    setImageUrl("");
-    setUrlTitle("");
-    setUrlType("");
-    await loadItems();
-    setUploading(false);
   }
 
   async function handleDelete(id: string) {
-    setDeletingId(id);
+    try {
+      setError(null);
+      setDeletingId(id);
 
-    const { error } = await supabase.from("wardrobe").delete().eq("id", id);
+      const { error } = await supabase.from("wardrobe").delete().eq("id", id);
 
-    if (error) {
-      alert(error.message);
+      if (error) {
+        setError(error.message);
+        return;
+      }
+
+      setItems((prev) => prev.filter((item) => item.id !== id));
+    } catch (err: any) {
+      setError(err.message || "Failed to delete item.");
+    } finally {
       setDeletingId(null);
-      return;
     }
-
-    setItems((prev) => prev.filter((item) => item.id !== id));
-    setDeletingId(null);
   }
 
-  function handleUseInTryOn(item: WardrobeItem) {
-    localStorage.setItem("selectedClothing", JSON.stringify(item));
-    router.push("/try-on");
+  function handleUseInTryOn(imageUrl: string) {
+    localStorage.setItem("selectedClothing", imageUrl);
+    window.location.href = "/try-on";
+  }
+
+  if (loading || pageLoading) {
+    return (
+      <div className="min-h-screen bg-zinc-50 dark:bg-black">
+        <div className="mx-auto w-full max-w-6xl px-4 py-6">
+          <div className="text-sm text-zinc-500 dark:text-zinc-400">Loading wardrobe...</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-zinc-50 dark:bg-black">
+        <div className="mx-auto w-full max-w-6xl px-4 py-6">
+          <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+            <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">
+              Wardrobe
+            </h1>
+            <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+              You need to log in to see your wardrobe.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
-    <main className="mx-auto max-w-7xl px-6 py-8">
-      <h1 className="text-3xl font-semibold text-zinc-900">Wardrobe</h1>
-      <p className="mt-2 text-sm text-zinc-600">
-        Save clothing items and reuse them in try-on.
-      </p>
-
-      <section className="mt-8 rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm">
-        <h2 className="text-xl font-semibold text-zinc-900">Add item</h2>
-
-        <div className="mt-6 grid gap-6 md:grid-cols-2">
-          <div className="rounded-2xl border border-zinc-200 p-4">
-            <p className="mb-3 text-sm font-medium text-zinc-700">From computer</p>
-
-            <div className="space-y-3">
-              <input type="file" onChange={handleFileChange} className="block w-full text-sm" />
-
-              <input
-                type="text"
-                placeholder="Title"
-                value={computerTitle}
-                onChange={(e) => setComputerTitle(e.target.value)}
-                className="w-full rounded-xl border border-zinc-200 px-4 py-3 text-sm outline-none focus:border-zinc-400"
-              />
-
-              <input
-                type="text"
-                placeholder="Type"
-                value={computerType}
-                onChange={(e) => setComputerType(e.target.value)}
-                className="w-full rounded-xl border border-zinc-200 px-4 py-3 text-sm outline-none focus:border-zinc-400"
-              />
-
-              <button
-                onClick={handleAddFromComputer}
-                disabled={uploading}
-                className="rounded-full bg-zinc-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:opacity-60"
-              >
-                {uploading ? "Adding..." : "Add item"}
-              </button>
-            </div>
+    <div className="min-h-screen bg-zinc-50 dark:bg-black">
+      <div className="mx-auto w-full max-w-6xl px-4 py-6">
+        <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+              Wardrobe
+            </h1>
+            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+              Save clothing items and reuse them in try-on.
+            </p>
           </div>
 
-          <div className="rounded-2xl border border-zinc-200 p-4">
-            <p className="mb-3 text-sm font-medium text-zinc-700">From URL</p>
-
-            <div className="space-y-3">
-              <input
-                type="text"
-                placeholder="Image URL"
-                value={imageUrl}
-                onChange={(e) => setImageUrl(e.target.value)}
-                className="w-full rounded-xl border border-zinc-200 px-4 py-3 text-sm outline-none focus:border-zinc-400"
-              />
-
-              <input
-                type="text"
-                placeholder="Title"
-                value={urlTitle}
-                onChange={(e) => setUrlTitle(e.target.value)}
-                className="w-full rounded-xl border border-zinc-200 px-4 py-3 text-sm outline-none focus:border-zinc-400"
-              />
-
-              <input
-                type="text"
-                placeholder="Type"
-                value={urlType}
-                onChange={(e) => setUrlType(e.target.value)}
-                className="w-full rounded-xl border border-zinc-200 px-4 py-3 text-sm outline-none focus:border-zinc-400"
-              />
-
-              <button
-                onClick={handleAddFromUrl}
-                disabled={uploading}
-                className="rounded-full bg-zinc-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:opacity-60"
-              >
-                {uploading ? "Adding..." : "Add item"}
-              </button>
-            </div>
-          </div>
+          <button
+            type="button"
+            onClick={() => setShowAddForm((prev) => !prev)}
+            className="rounded-xl bg-black px-4 py-2.5 text-sm font-medium text-white dark:bg-zinc-50 dark:text-zinc-900"
+          >
+            {showAddForm ? "Close" : "Add item"}
+          </button>
         </div>
-      </section>
 
-      <section className="mt-8">
-        {loading ? (
-          <p className="text-sm text-zinc-500">Loading wardrobe...</p>
-        ) : items.length === 0 ? (
-          <p className="text-sm text-zinc-500">No items yet.</p>
+        {error && (
+          <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-950/40 dark:text-red-200">
+            {error}
+          </div>
+        )}
+
+        {showAddForm && (
+          <div className="mb-6 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+            <div className="grid gap-4">
+              <ImageUpload
+                label="Upload clothing item"
+                helpText="PNG, JPG, or WEBP (max 10MB)"
+                value={newFile}
+                onChange={setNewFile}
+              />
+
+              <div className="grid gap-2">
+                <label className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                  Or add by image URL
+                </label>
+                <input
+                  type="text"
+                  value={newUrl}
+                  onChange={(e) => setNewUrl(e.target.value)}
+                  placeholder="https://example.com/item.jpg"
+                  className="h-11 rounded-xl border border-zinc-300 bg-white px-3 text-sm text-zinc-900 outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
+                />
+              </div>
+
+              <div className="grid gap-2">
+                <label className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                  Title (optional)
+                </label>
+                <input
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="Brown jacket"
+                  className="h-11 rounded-xl border border-zinc-300 bg-white px-3 text-sm text-zinc-900 outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
+                />
+              </div>
+
+              <div className="grid gap-2">
+                <label className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                  Type (optional)
+                </label>
+                <input
+                  type="text"
+                  value={type}
+                  onChange={(e) => setType(e.target.value)}
+                  placeholder="Jacket / Hoodie / Dress"
+                  className="h-11 rounded-xl border border-zinc-300 bg-white px-3 text-sm text-zinc-900 outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={handleAddItem}
+                disabled={saving}
+                className="rounded-xl bg-black px-4 py-3 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900"
+              >
+                {saving ? "Saving..." : "Save item"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {items.length === 0 ? (
+          <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">
+              No wardrobe items yet. Add your first item.
+            </p>
+          </div>
         ) : (
-          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {items.map((item) => (
               <div
                 key={item.id}
-                className="overflow-hidden rounded-3xl border border-zinc-200 bg-white p-4 shadow-sm"
+                className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950"
               >
-                <div className="flex h-72 items-center justify-center overflow-hidden rounded-2xl bg-zinc-50">
+                <div className="aspect-[4/5] w-full bg-zinc-100 dark:bg-zinc-900">
                   <img
                     src={item.image_url}
-                    alt={item.title ?? "Wardrobe item"}
-                    className="max-h-full max-w-full object-contain"
+                    alt={item.title || "Wardrobe item"}
+                    className="block h-full w-full object-contain"
                   />
                 </div>
 
-                <div className="mt-4">
-                  <h3 className="text-base font-semibold text-zinc-900">
-                    {item.title || "Untitled item"}
-                  </h3>
-                  <p className="mt-1 text-sm text-zinc-500">{item.type || "No type"}</p>
+                <div className="space-y-3 p-4">
+                  <div className="min-h-[52px]">
+                    <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                      {item.title || "Untitled item"}
+                    </div>
+                    <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                      {item.type || "No type"}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleUseInTryOn(item.image_url)}
+                      className="rounded-xl bg-black px-3 py-2.5 text-sm font-medium text-white dark:bg-zinc-50 dark:text-zinc-900"
+                    >
+                      Use in Try-On
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(item.id)}
+                      disabled={deletingId === item.id}
+                      className="rounded-xl border border-zinc-300 px-3 py-2.5 text-sm font-medium text-zinc-900 dark:border-zinc-700 dark:text-zinc-50"
+                    >
+                      {deletingId === item.id ? "Deleting..." : "Delete"}
+                    </button>
+                  </div>
                 </div>
-
-                <button
-                  onClick={() => handleUseInTryOn(item)}
-                  className="mt-4 w-full rounded-full bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-zinc-800"
-                >
-                  Use in Try-On
-                </button>
-
-                <button
-                  onClick={() => handleDelete(item.id)}
-                  disabled={deletingId === item.id}
-                  className="mt-3 w-full rounded-full border border-red-200 bg-white px-4 py-2.5 text-sm font-medium text-red-500 transition hover:bg-red-50 disabled:opacity-60"
-                >
-                  {deletingId === item.id ? "Deleting..." : "Delete"}
-                </button>
               </div>
             ))}
           </div>
         )}
-      </section>
-    </main>
+      </div>
+    </div>
   );
 }
