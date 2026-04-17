@@ -14,7 +14,7 @@ type WardrobeItem = {
 
 export default function TryOnPage() {
   const router = useRouter();
-  const supabase = useMemo(() => createClient(), []);
+  const supabase = useMemo(() => createSupabaseBrowserClient(), []);
 
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [selectedClothingUrl, setSelectedClothingUrl] = useState<string | null>(null);

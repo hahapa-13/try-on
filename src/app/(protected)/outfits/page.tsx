@@ -12,7 +12,7 @@ type OutfitItem = {
 };
 
 export default function OutfitsPage() {
-  const supabase = useMemo(() => createClient(), []);
+  const supabase = useMemo(() => createSupabaseBrowserClient(), []);
 
   const [items, setItems] = useState<OutfitItem[]>([]);
   const [loading, setLoading] = useState(true);
