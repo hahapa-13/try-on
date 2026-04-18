@@ -59,8 +59,8 @@ function readTryOnStorage(): TryOnStorage {
 
 function writeTryOnStorage(data: TryOnStorage) {
   if (typeof window === "undefined") return;
-  // Safety: never persist blob URLs — they are tab-local and die on navigation
-  const safe = {
+  // Never persist blob URLs — they are tab-local and die on navigation
+  const safe: TryOnStorage = {
     ...data,
     avatarUrl:
       data.avatarUrl && data.avatarUrl.startsWith("blob:")
@@ -72,6 +72,61 @@ function writeTryOnStorage(data: TryOnStorage) {
         : data.clothingUrl,
   };
   sessionStorage.setItem(TRY_ON_STORAGE_KEY, JSON.stringify(safe));
+}
+
+// ---------------------------------------------------------------------------
+// URL classification helpers
+// ---------------------------------------------------------------------------
+
+function isSupabaseStorageUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.hostname.endsWith(".supabase.co") &&
+      parsed.pathname.includes("/storage/v1/object/public/")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isExternalRemoteUrl(url: string): boolean {
+  if (!url) return false;
+  if (url.startsWith("blob:")) return false;
+  if (isSupabaseStorageUrl(url)) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Server-side image import helper
+// Calls /api/import-image — no CORS restrictions since it runs on the server
+// ---------------------------------------------------------------------------
+
+async function importExternalImageViaServer(
+  imageUrl: string,
+  folder = "clothing-uploads"
+): Promise<string> {
+  const res = await fetch("/api/import-image", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ imageUrl, folder }),
+  });
+
+  const json = await res.json();
+
+  if (!res.ok || !json.publicUrl) {
+    throw new Error(
+      json.error ||
+        "Failed to import the image. Please try uploading it manually."
+    );
+  }
+
+  return json.publicUrl as string;
 }
 
 // ---------------------------------------------------------------------------
@@ -119,7 +174,6 @@ export default function TryOnPage() {
   const [mounted, setMounted] = useState(false);
 
   // profileEnsuredRef tracks the user.id it was last run for
-  // so it resets automatically when a different user signs in.
   const profileEnsuredRef = useRef<string | null>(null);
 
   // Avatar
@@ -147,7 +201,7 @@ export default function TryOnPage() {
   const [pendingResultBlob, setPendingResultBlob] = useState<Blob | null>(null);
   const [lastKey, setLastKey] = useState<string | null>(null);
 
-  // Blob URL refs — only used for transient in-memory preview, never persisted
+  // Blob URL refs — transient in-memory only, never persisted
   const avatarBlobRef = useRef<string | null>(null);
   const clothingBlobRef = useRef<string | null>(null);
   const resultBlobRef = useRef<string | null>(null);
@@ -174,7 +228,6 @@ export default function TryOnPage() {
     localStorage.removeItem("selectedAvatar");
 
     if (localStorageAvatar) {
-      // Handoff from outfits page — always a durable remote URL
       setAvatarUrl(localStorageAvatar);
       setAvatarSource("outfits-selection");
       setAvatarRemoved(false);
@@ -189,10 +242,10 @@ export default function TryOnPage() {
       setAvatarSource("none");
       setAvatarRemoved(true);
     } else if (stored.avatarUrl) {
-      // Only restore if it is a durable URL (blob: would be broken here anyway,
-      // but writeTryOnStorage already guards against persisting blob: URLs)
       setAvatarUrl(stored.avatarUrl);
-      setAvatarSource(stored.avatarSource !== "none" ? stored.avatarSource : "session");
+      setAvatarSource(
+        stored.avatarSource !== "none" ? stored.avatarSource : "session"
+      );
       setAvatarRemoved(false);
     }
 
@@ -286,11 +339,19 @@ export default function TryOnPage() {
     profileAvatarUrl !== null &&
     avatarUrl !== profileAvatarUrl;
 
+  // Clothing is "uploading" only when it is still a transient blob URL
+  const clothingIsUploading =
+    isPreparingClothing ||
+    (!!clothingUrl && clothingUrl.startsWith("blob:"));
+
   // ---------------------------------------------------------------------------
-  // Supabase Storage upload helper
+  // Supabase Storage upload helper (browser client — for local files)
   // ---------------------------------------------------------------------------
 
-  async function uploadFileToSupabase(file: File, folder: string): Promise<string> {
+  async function uploadFileToSupabase(
+    file: File,
+    folder: string
+  ): Promise<string> {
     const filePath = `${folder}/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
 
     const { data, error } = await supabase.storage
@@ -306,12 +367,56 @@ export default function TryOnPage() {
     return publicUrlData.publicUrl;
   }
 
+  // ---------------------------------------------------------------------------
+  // Ensure clothing URL is stored in Supabase before saving or generating.
+  // - Already a Supabase URL → return as-is
+  // - External URL → import via server route
+  // - blob: URL → should not reach here in normal flow
+  // Updates state + sessionStorage with the durable URL.
+  // ---------------------------------------------------------------------------
+
+  async function ensureClothingStoredInSupabase(
+    currentUrl: string
+  ): Promise<string> {
+    if (isSupabaseStorageUrl(currentUrl)) {
+      return currentUrl;
+    }
+
+    if (currentUrl.startsWith("blob:")) {
+      throw new Error(
+        "Clothing image is still uploading. Please wait a moment and try again."
+      );
+    }
+
+    if (isExternalRemoteUrl(currentUrl)) {
+      // Delegate to server route — no browser CORS restrictions
+      const durableUrl = await importExternalImageViaServer(
+        currentUrl,
+        "clothing-uploads"
+      );
+
+      setClothingUrl(durableUrl);
+      setClothingInputUrl(durableUrl);
+      const stored = readTryOnStorage();
+      writeTryOnStorage({ ...stored, clothingUrl: durableUrl });
+
+      return durableUrl;
+    }
+
+    return currentUrl;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Canvas image loader
+  // ---------------------------------------------------------------------------
+
   function loadImage(src: string): Promise<HTMLImageElement> {
     return new Promise((resolve, reject) => {
       const img = new window.Image();
       img.crossOrigin = "anonymous";
       img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error(`Failed to load image: ${src}`));
+      img.onerror = () =>
+        reject(new Error(`Failed to load image: ${src}`));
       img.src = src;
     });
   }
@@ -381,7 +486,6 @@ export default function TryOnPage() {
     try {
       setIsPreparingAvatar(true);
 
-      // 1. Compress
       const compressed = await compressImage(file, {
         maxWidth: 1200,
         maxHeight: 1600,
@@ -389,24 +493,23 @@ export default function TryOnPage() {
         mimeType: "image/jpeg",
       });
 
-      // 2. Show a transient blob preview immediately while upload runs
+      // Transient blob for instant preview
       if (avatarBlobRef.current) {
         URL.revokeObjectURL(avatarBlobRef.current);
         avatarBlobRef.current = null;
       }
       const blobPreviewUrl = URL.createObjectURL(compressed);
       avatarBlobRef.current = blobPreviewUrl;
-      setAvatarUrl(blobPreviewUrl); // temporary — gives instant feedback
+      setAvatarUrl(blobPreviewUrl);
       setAvatarSource("local-upload");
       setAvatarRemoved(false);
 
-      // 3. Upload to Supabase Storage — get a durable public URL
+      // Upload — get durable URL
       const durableUrl = await uploadFileToSupabase(
         compressed,
         "avatar-uploads"
       );
 
-      // 4. Replace blob preview with durable URL, revoke the blob
       if (avatarBlobRef.current) {
         URL.revokeObjectURL(avatarBlobRef.current);
         avatarBlobRef.current = null;
@@ -416,7 +519,6 @@ export default function TryOnPage() {
       setAvatarSource("local-upload");
       setAvatarRemoved(false);
 
-      // 5. Persist only the durable URL
       const stored = readTryOnStorage();
       writeTryOnStorage({
         ...stored,
@@ -425,7 +527,6 @@ export default function TryOnPage() {
         avatarRemoved: false,
       });
     } catch (err: any) {
-      // On failure, clear the broken blob preview
       if (avatarBlobRef.current) {
         URL.revokeObjectURL(avatarBlobRef.current);
         avatarBlobRef.current = null;
@@ -523,7 +624,7 @@ export default function TryOnPage() {
         clothingBlobRef.current = null;
       }
 
-      setClothing(null); // file uploaded — no longer needed in memory
+      setClothing(null);
       setClothingUrl(durableUrl);
 
       const stored = readTryOnStorage();
@@ -541,6 +642,8 @@ export default function TryOnPage() {
     }
   }
 
+  // Applying an external URL: store it directly for preview.
+  // It will be imported server-side on first save/generate.
   function applyClothingUrl() {
     const trimmed = clothingInputUrl.trim();
     if (!trimmed) {
@@ -556,6 +659,7 @@ export default function TryOnPage() {
     setError(null);
     setClothing(null);
     setClothingUrl(trimmed);
+    setClothingInputUrl(trimmed);
 
     const stored = readTryOnStorage();
     writeTryOnStorage({ ...stored, clothingUrl: trimmed });
@@ -577,7 +681,7 @@ export default function TryOnPage() {
   }
 
   // ---------------------------------------------------------------------------
-  // Save to wishlist / wardrobe
+  // Save to wishlist
   // ---------------------------------------------------------------------------
 
   async function saveItemToWishlist() {
@@ -590,16 +694,17 @@ export default function TryOnPage() {
         return;
       }
 
-      // clothingUrl is always a durable URL at this point
-      // (blob uploads are resolved before setting clothingUrl)
-      if (!clothingUrl || clothingUrl.startsWith("blob:")) {
-        setError("Please wait for the clothing image to finish uploading.");
+      if (!clothingUrl) {
+        setError("Please select a clothing item first.");
         return;
       }
 
+      // Import external URL via server if needed
+      const durableUrl = await ensureClothingStoredInSupabase(clothingUrl);
+
       const { error } = await supabase.from("wishlist").insert({
         user_id: user.id,
-        image_url: clothingUrl,
+        image_url: durableUrl,
       });
 
       if (error) {
@@ -615,6 +720,10 @@ export default function TryOnPage() {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Save to wardrobe
+  // ---------------------------------------------------------------------------
+
   async function saveItemToWardrobe() {
     try {
       setError(null);
@@ -625,14 +734,17 @@ export default function TryOnPage() {
         return;
       }
 
-      if (!clothingUrl || clothingUrl.startsWith("blob:")) {
-        setError("Please wait for the clothing image to finish uploading.");
+      if (!clothingUrl) {
+        setError("Please select a clothing item first.");
         return;
       }
 
+      // Import external URL via server if needed
+      const durableUrl = await ensureClothingStoredInSupabase(clothingUrl);
+
       const { error } = await supabase.from("wardrobe").insert({
         user_id: user.id,
-        image_url: clothingUrl,
+        image_url: durableUrl,
       });
 
       if (error) {
@@ -659,22 +771,47 @@ export default function TryOnPage() {
       setError(null);
 
       if (!avatarUrl) {
-        setError("Please upload your photo or select an avatar from outfits.");
+        setError(
+          "Please upload your photo or select an avatar from outfits."
+        );
         return;
       }
       if (!clothingUrl) {
         setError("Please select a clothing item.");
         return;
       }
-      if (avatarUrl.startsWith("blob:") || clothingUrl.startsWith("blob:")) {
-        setError("Please wait for images to finish uploading.");
+      if (avatarUrl.startsWith("blob:")) {
+        setError("Please wait for the avatar to finish uploading.");
+        return;
+      }
+      if (clothingUrl.startsWith("blob:")) {
+        setError(
+          "Please wait for the clothing image to finish uploading."
+        );
         return;
       }
 
-      const currentKey = `${avatarUrl}-${clothingUrl}`;
+      setIsGenerating(true);
+
+      // If clothing is still an external URL, import it server-side first
+      // so the canvas crossOrigin request hits our own Supabase bucket
+      let finalClothingUrl = clothingUrl;
+      if (isExternalRemoteUrl(clothingUrl)) {
+        try {
+          finalClothingUrl =
+            await ensureClothingStoredInSupabase(clothingUrl);
+        } catch (importErr: any) {
+          setError(
+            importErr.message ||
+              "Failed to prepare clothing image for preview."
+          );
+          return;
+        }
+      }
+
+      const currentKey = `${avatarUrl}-${finalClothingUrl}`;
       if (currentKey === lastKey && resultUrl) return;
 
-      setIsGenerating(true);
       setLastKey(currentKey);
 
       const resultBlob = await createCompositePreview();
@@ -696,6 +833,10 @@ export default function TryOnPage() {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Save generated result to outfits
+  // ---------------------------------------------------------------------------
+
   async function saveGeneratedResult() {
     try {
       if (!pendingResultBlob) {
@@ -716,7 +857,10 @@ export default function TryOnPage() {
         { type: "image/jpeg" }
       );
 
-      const resultPublicUrl = await uploadFileToSupabase(resultFile, "results");
+      const resultPublicUrl = await uploadFileToSupabase(
+        resultFile,
+        "results"
+      );
 
       const { error: insertError } = await supabase.from("outfits").insert({
         user_id: user.id,
@@ -772,7 +916,8 @@ export default function TryOnPage() {
             Try On
           </h1>
           <p className="text-sm leading-6 text-zinc-500 dark:text-zinc-400">
-            Upload your photo, choose a clothing item, and preview the look before buying.
+            Upload your photo, choose a clothing item, and preview the look
+            before buying.
           </p>
         </div>
 
@@ -795,7 +940,7 @@ export default function TryOnPage() {
           <div className="mt-4 space-y-3">
             {/*
               value={null} always — prevents ImageUpload's internal preview
-              from rendering alongside our single controlled preview card.
+              from appearing alongside our single controlled preview card.
             */}
             <ImageUpload
               label="Your avatar photo"
@@ -876,7 +1021,8 @@ export default function TryOnPage() {
                 Choose your outfit
               </div>
               <div className="text-xs leading-5 text-zinc-500 dark:text-zinc-400">
-                Upload a clothing item, paste an image URL, or pick one from wardrobe or wishlist.
+                Upload a clothing item, paste an image URL, or pick one from
+                wardrobe or wishlist.
               </div>
             </div>
           </div>
@@ -885,7 +1031,7 @@ export default function TryOnPage() {
             <ImageUpload
               label="Upload clothing item"
               helpText={
-                isPreparingClothing
+                clothingIsUploading
                   ? "Uploading clothing..."
                   : "PNG, JPG, or WEBP (max 10MB)."
               }
@@ -919,7 +1065,7 @@ export default function TryOnPage() {
             {clothingUrl && (
               <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
                 <div className="aspect-[4/5] w-full">
-                  {isPreparingClothing ? (
+                  {clothingIsUploading ? (
                     <div className="flex h-full w-full items-center justify-center bg-zinc-100 dark:bg-zinc-900">
                       <span className="text-sm text-zinc-500 dark:text-zinc-400">
                         Uploading…
@@ -937,7 +1083,7 @@ export default function TryOnPage() {
                 <div className="border-t border-zinc-200 p-3 dark:border-zinc-800">
                   <button
                     onClick={clearClothing}
-                    disabled={isPreparingClothing}
+                    disabled={clothingIsUploading}
                     className="w-full rounded-xl border border-zinc-300 px-4 py-2.5 text-sm font-medium text-zinc-900 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50"
                   >
                     Remove clothing
@@ -947,10 +1093,18 @@ export default function TryOnPage() {
             )}
 
             <div className="grid grid-cols-1 gap-3">
-              <ButtonLink href="/wardrobe" variant="secondary" className="w-full">
+              <ButtonLink
+                href="/wardrobe"
+                variant="secondary"
+                className="w-full"
+              >
                 From wardrobe
               </ButtonLink>
-              <ButtonLink href="/wishlist" variant="secondary" className="w-full">
+              <ButtonLink
+                href="/wishlist"
+                variant="secondary"
+                className="w-full"
+              >
                 From wishlist
               </ButtonLink>
             </div>
@@ -959,7 +1113,9 @@ export default function TryOnPage() {
               <button
                 type="button"
                 onClick={saveItemToWishlist}
-                disabled={!clothingUrl || isSavingWishlist || isPreparingClothing}
+                disabled={
+                  !clothingUrl || isSavingWishlist || clothingIsUploading
+                }
                 className="rounded-xl border border-zinc-300 px-4 py-2.5 text-sm font-medium text-zinc-900 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50"
               >
                 {isSavingWishlist ? "Saving..." : "Save to wishlist"}
@@ -968,7 +1124,9 @@ export default function TryOnPage() {
               <button
                 type="button"
                 onClick={saveItemToWardrobe}
-                disabled={!clothingUrl || isSavingWardrobe || isPreparingClothing}
+                disabled={
+                  !clothingUrl || isSavingWardrobe || clothingIsUploading
+                }
                 className="rounded-xl border border-zinc-300 px-4 py-2.5 text-sm font-medium text-zinc-900 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50"
               >
                 {isSavingWardrobe ? "Saving..." : "Save to wardrobe"}
@@ -991,7 +1149,7 @@ export default function TryOnPage() {
             !canGenerate ||
             isGenerating ||
             isPreparingAvatar ||
-            isPreparingClothing
+            clothingIsUploading
           }
           className="inline-flex min-h-12 w-full items-center justify-center rounded-2xl bg-black px-4 py-3 text-sm font-medium text-white shadow-sm transition disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900"
         >
@@ -1070,7 +1228,8 @@ export default function TryOnPage() {
               <div className="grid gap-3">
                 <div className="aspect-[4/5] w-full rounded-2xl border border-dashed border-zinc-300 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950" />
                 <div className="rounded-xl border border-dashed border-zinc-300 px-4 py-4 text-center text-sm text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
-                  Upload your photo and select a clothing item to see your generated image here.
+                  Upload your photo and select a clothing item to see your
+                  generated image here.
                 </div>
               </div>
             )}
