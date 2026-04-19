@@ -4,6 +4,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { useUser } from "@/hooks/useUser";
+import { useAiConnection } from "@/hooks/useAiConnection";
+import { useAiGeneration } from "@/hooks/useAiGeneration";
 import { ImageUpload } from "@/components/ImageUpload";
 import { ButtonLink } from "@/components/ui/Button";
 import { compressImage } from "@/lib/image";
@@ -114,16 +116,12 @@ async function importExternalImageViaServer(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ imageUrl, folder }),
   });
-
   const json = await res.json();
-
   if (!res.ok || !json.publicUrl) {
     throw new Error(
-      json.error ||
-        "Failed to import the image. Please try uploading it manually."
+      json.error || "Failed to import the image. Please upload it manually."
     );
   }
-
   return json.publicUrl as string;
 }
 
@@ -169,6 +167,10 @@ export default function TryOnPage() {
   const { user, loading } = useUser();
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
 
+  const { status: aiStatus } = useAiConnection();
+  const aiGeneration = useAiGeneration();
+  const aiConnected = aiStatus?.connected ?? false;
+
   const [mounted, setMounted] = useState(false);
   const profileEnsuredRef = useRef<string | null>(null);
 
@@ -191,28 +193,30 @@ export default function TryOnPage() {
   const [isSavingWardrobe, setIsSavingWardrobe] = useState(false);
   const [isSavingResult, setIsSavingResult] = useState(false);
 
-  // Result
-  const [error, setError] = useState<string | null>(null);
-  const [resultUrl, setResultUrl] = useState<string | null>(null);
+  // Canvas fallback result state
+  const [canvasResultUrl, setCanvasResultUrl] = useState<string | null>(null);
   const [pendingResultBlob, setPendingResultBlob] = useState<Blob | null>(null);
   const [lastKey, setLastKey] = useState<string | null>(null);
+
+  const [error, setError] = useState<string | null>(null);
 
   // Blob URL refs — transient in-memory only, never persisted
   const avatarBlobRef = useRef<string | null>(null);
   const clothingBlobRef = useRef<string | null>(null);
-  const resultBlobRef = useRef<string | null>(null);
+  const canvasBlobRef = useRef<string | null>(null);
 
   // ---------------------------------------------------------------------------
-  // resetGeneratedState — call whenever avatar or clothing changes so stale
-  // composite results are never shown for a different input combination
+  // resetGeneratedState — clears both AI and canvas result state
   // ---------------------------------------------------------------------------
 
   function resetGeneratedState() {
-    if (resultBlobRef.current) {
-      URL.revokeObjectURL(resultBlobRef.current);
-      resultBlobRef.current = null;
+    aiGeneration.reset();
+
+    if (canvasBlobRef.current) {
+      URL.revokeObjectURL(canvasBlobRef.current);
+      canvasBlobRef.current = null;
     }
-    setResultUrl(null);
+    setCanvasResultUrl(null);
     setPendingResultBlob(null);
     setLastKey(null);
     setError(null);
@@ -226,16 +230,10 @@ export default function TryOnPage() {
     setMounted(true);
   }, []);
 
-  // ---------------------------------------------------------------------------
-  // On mount: resolve initial state from localStorage handoffs + sessionStorage
-  // ---------------------------------------------------------------------------
-
   useEffect(() => {
     if (!mounted) return;
 
     const stored = readTryOnStorage();
-
-    // --- Avatar ---
     const localStorageAvatar = localStorage.getItem("selectedAvatar");
     localStorage.removeItem("selectedAvatar");
 
@@ -261,26 +259,18 @@ export default function TryOnPage() {
       setAvatarRemoved(false);
     }
 
-    // --- Clothing ---
     const localStorageClothing = localStorage.getItem("selectedClothing");
     localStorage.removeItem("selectedClothing");
-
     const nextClothingUrl = localStorageClothing ?? stored.clothingUrl ?? null;
     setClothingUrl(nextClothingUrl);
     setClothingInputUrl(nextClothingUrl ?? "");
-
     if (nextClothingUrl !== stored.clothingUrl) {
-      writeTryOnStorage({
-        ...readTryOnStorage(),
-        clothingUrl: nextClothingUrl,
-      });
+      writeTryOnStorage({ ...readTryOnStorage(), clothingUrl: nextClothingUrl });
     }
   }, [mounted]);
 
   // ---------------------------------------------------------------------------
   // Window focus re-sync
-  // Picks up selectedAvatar / selectedClothing set by other pages while this
-  // page was in the background, without requiring a full navigation cycle.
   // ---------------------------------------------------------------------------
 
   useEffect(() => {
@@ -293,16 +283,13 @@ export default function TryOnPage() {
       if (selectedAvatar) {
         localStorage.removeItem("selectedAvatar");
         resetGeneratedState();
-
-        setAvatarUrl(selectedAvatar);
-        setAvatarSource("outfits-selection");
-        setAvatarRemoved(false);
-
         if (avatarBlobRef.current) {
           URL.revokeObjectURL(avatarBlobRef.current);
           avatarBlobRef.current = null;
         }
-
+        setAvatarUrl(selectedAvatar);
+        setAvatarSource("outfits-selection");
+        setAvatarRemoved(false);
         const stored = readTryOnStorage();
         writeTryOnStorage({
           ...stored,
@@ -315,56 +302,41 @@ export default function TryOnPage() {
       if (selectedClothing) {
         localStorage.removeItem("selectedClothing");
         resetGeneratedState();
-
         if (clothingBlobRef.current) {
           URL.revokeObjectURL(clothingBlobRef.current);
           clothingBlobRef.current = null;
         }
-
         setClothing(null);
         setClothingUrl(selectedClothing);
         setClothingInputUrl(selectedClothing);
-
         const stored = readTryOnStorage();
         writeTryOnStorage({ ...stored, clothingUrl: selectedClothing });
       }
     }
 
     window.addEventListener("focus", syncSelectedItems);
-    return () => {
-      window.removeEventListener("focus", syncSelectedItems);
-    };
-    // resetGeneratedState is defined in render scope — stable across renders
-    // because it only reads/sets refs and calls stable React setters
+    return () => window.removeEventListener("focus", syncSelectedItems);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted]);
 
   // ---------------------------------------------------------------------------
-  // Load profile avatar as fallback once per user session
+  // Profile avatar
   // ---------------------------------------------------------------------------
 
   useEffect(() => {
     if (!mounted || !user) return;
     if (profileEnsuredRef.current === user.id) return;
-
     profileEnsuredRef.current = user.id;
     let cancelled = false;
 
     async function loadProfileAvatar() {
       try {
-        await ensureMyProfile({
-          id: user!.id,
-          email: user!.email ?? null,
-        });
-
+        await ensureMyProfile({ id: user!.id, email: user!.email ?? null });
         const profile = await getMyProfile(user!.id);
         if (cancelled) return;
-
         const profileAvatar = profile?.avatar_url ?? null;
         setProfileAvatarUrl(profileAvatar);
-
         if (!profileAvatar) return;
-
         const stored = readTryOnStorage();
         if (!stored.avatarUrl && !stored.avatarRemoved) {
           setAvatarUrl(profileAvatar);
@@ -377,9 +349,13 @@ export default function TryOnPage() {
             avatarRemoved: false,
           });
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (!cancelled) {
-          setError(err.message || "Failed to load profile avatar.");
+          const message =
+            err instanceof Error
+              ? err.message
+              : "Failed to load profile avatar.";
+          setError(message);
         }
       }
     }
@@ -391,70 +367,62 @@ export default function TryOnPage() {
   }, [mounted, user]);
 
   // ---------------------------------------------------------------------------
-  // Cleanup all blob URLs on unmount
+  // Cleanup blob URLs on unmount
   // ---------------------------------------------------------------------------
 
   useEffect(() => {
     return () => {
       if (avatarBlobRef.current) URL.revokeObjectURL(avatarBlobRef.current);
       if (clothingBlobRef.current) URL.revokeObjectURL(clothingBlobRef.current);
-      if (resultBlobRef.current) URL.revokeObjectURL(resultBlobRef.current);
+      if (canvasBlobRef.current) URL.revokeObjectURL(canvasBlobRef.current);
     };
   }, []);
 
   // ---------------------------------------------------------------------------
-  // Derived UI flags
+  // Derived flags
   // ---------------------------------------------------------------------------
 
   const canGenerate = Boolean(avatarUrl && clothingUrl);
+
+  const clothingIsUploading =
+    isPreparingClothing ||
+    (!!clothingUrl && clothingUrl.startsWith("blob:"));
 
   const showUseProfileAvatarButton =
     !avatarRemoved &&
     profileAvatarUrl !== null &&
     avatarUrl !== profileAvatarUrl;
 
-  const clothingIsUploading =
-    isPreparingClothing ||
-    (!!clothingUrl && clothingUrl.startsWith("blob:"));
+  const generationIsActive =
+    isGenerating ||
+    aiGeneration.status === "starting" ||
+    aiGeneration.status === "running";
 
   // ---------------------------------------------------------------------------
-  // Supabase Storage upload helper (browser client — local files)
+  // Upload helper
   // ---------------------------------------------------------------------------
 
-  async function uploadFileToSupabase(
-    file: File,
-    folder: string
-  ): Promise<string> {
+  async function uploadFileToSupabase(file: File, folder: string): Promise<string> {
     const filePath = `${folder}/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
-
     const { data, error } = await supabase.storage
       .from("outfits")
       .upload(filePath, file);
-
     if (error) throw new Error(error.message);
-
     const { data: publicUrlData } = supabase.storage
       .from("outfits")
       .getPublicUrl(data.path);
-
     return publicUrlData.publicUrl;
   }
-
-  // ---------------------------------------------------------------------------
-  // Ensure clothing URL is in Supabase before saving or generating
-  // ---------------------------------------------------------------------------
 
   async function ensureClothingStoredInSupabase(
     currentUrl: string
   ): Promise<string> {
     if (isSupabaseStorageUrl(currentUrl)) return currentUrl;
-
     if (currentUrl.startsWith("blob:")) {
       throw new Error(
-        "Clothing image is still uploading. Please wait a moment and try again."
+        "Clothing image is still uploading. Please wait a moment."
       );
     }
-
     if (isExternalRemoteUrl(currentUrl)) {
       const durableUrl = await importExternalImageViaServer(
         currentUrl,
@@ -466,13 +434,8 @@ export default function TryOnPage() {
       writeTryOnStorage({ ...stored, clothingUrl: durableUrl });
       return durableUrl;
     }
-
     return currentUrl;
   }
-
-  // ---------------------------------------------------------------------------
-  // Canvas image loader
-  // ---------------------------------------------------------------------------
 
   function loadImage(src: string): Promise<HTMLImageElement> {
     return new Promise((resolve, reject) => {
@@ -484,42 +447,30 @@ export default function TryOnPage() {
     });
   }
 
-  // ---------------------------------------------------------------------------
-  // Composite preview
-  // ---------------------------------------------------------------------------
-
   async function createCompositePreview(): Promise<Blob> {
     if (!avatarUrl || !clothingUrl) {
       throw new Error("Missing avatar or clothing image.");
     }
-
     const [avatarImg, clothingImg] = await Promise.all([
       loadImage(avatarUrl),
       loadImage(clothingUrl),
     ]);
-
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("Could not create canvas context.");
-
     const MAX_WIDTH = 900;
     const originalWidth = avatarImg.naturalWidth || avatarImg.width;
     const originalHeight = avatarImg.naturalHeight || avatarImg.height;
     const scale = Math.min(1, MAX_WIDTH / originalWidth);
-
     canvas.width = Math.round(originalWidth * scale);
     canvas.height = Math.round(originalHeight * scale);
-
     ctx.drawImage(avatarImg, 0, 0, canvas.width, canvas.height);
-
     const overlayWidth = canvas.width * 0.7;
     const overlayX = canvas.width / 2 - overlayWidth / 2;
     const overlayY = canvas.height * 0.44 - overlayWidth / 2;
-
     ctx.globalAlpha = 0.72;
     ctx.drawImage(clothingImg, overlayX, overlayY, overlayWidth, overlayWidth);
     ctx.globalAlpha = 1;
-
     return new Promise<Blob>((resolve, reject) => {
       canvas.toBlob(
         (blob) => {
@@ -541,45 +492,39 @@ export default function TryOnPage() {
 
   async function handleAvatarChange(file: File | null) {
     setError(null);
-    resetGeneratedState(); // clear stale result when avatar changes
-
+    resetGeneratedState();
     if (!file) {
       clearAvatar();
       return;
     }
-
     try {
       setIsPreparingAvatar(true);
-
       const compressed = await compressImage(file, {
         maxWidth: 1200,
         maxHeight: 1600,
         quality: 0.84,
         mimeType: "image/jpeg",
       });
-
       if (avatarBlobRef.current) {
         URL.revokeObjectURL(avatarBlobRef.current);
         avatarBlobRef.current = null;
       }
-
       const blobPreviewUrl = URL.createObjectURL(compressed);
       avatarBlobRef.current = blobPreviewUrl;
       setAvatarUrl(blobPreviewUrl);
       setAvatarSource("local-upload");
       setAvatarRemoved(false);
-
-      const durableUrl = await uploadFileToSupabase(compressed, "avatar-uploads");
-
+      const durableUrl = await uploadFileToSupabase(
+        compressed,
+        "avatar-uploads"
+      );
       if (avatarBlobRef.current) {
         URL.revokeObjectURL(avatarBlobRef.current);
         avatarBlobRef.current = null;
       }
-
       setAvatarUrl(durableUrl);
       setAvatarSource("local-upload");
       setAvatarRemoved(false);
-
       const stored = readTryOnStorage();
       writeTryOnStorage({
         ...stored,
@@ -587,14 +532,16 @@ export default function TryOnPage() {
         avatarSource: "local-upload",
         avatarRemoved: false,
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (avatarBlobRef.current) {
         URL.revokeObjectURL(avatarBlobRef.current);
         avatarBlobRef.current = null;
       }
       setAvatarUrl(null);
       setAvatarSource("none");
-      setError(err.message || "Failed to upload avatar image.");
+      const message =
+        err instanceof Error ? err.message : "Failed to upload avatar image.";
+      setError(message);
     } finally {
       setIsPreparingAvatar(false);
     }
@@ -603,16 +550,13 @@ export default function TryOnPage() {
   function applyProfileAvatar() {
     if (!profileAvatarUrl) return;
     resetGeneratedState();
-
     if (avatarBlobRef.current) {
       URL.revokeObjectURL(avatarBlobRef.current);
       avatarBlobRef.current = null;
     }
-
     setAvatarUrl(profileAvatarUrl);
     setAvatarSource("profile");
     setAvatarRemoved(false);
-
     const stored = readTryOnStorage();
     writeTryOnStorage({
       ...stored,
@@ -624,16 +568,13 @@ export default function TryOnPage() {
 
   function clearAvatar() {
     resetGeneratedState();
-
     if (avatarBlobRef.current) {
       URL.revokeObjectURL(avatarBlobRef.current);
       avatarBlobRef.current = null;
     }
-
     setAvatarUrl(null);
     setAvatarSource("none");
     setAvatarRemoved(true);
-
     const stored = readTryOnStorage();
     writeTryOnStorage({
       ...stored,
@@ -641,7 +582,6 @@ export default function TryOnPage() {
       avatarSource: "none",
       avatarRemoved: true,
     });
-
     localStorage.removeItem("selectedAvatar");
   }
 
@@ -651,54 +591,52 @@ export default function TryOnPage() {
 
   async function handleClothingChange(file: File | null) {
     setError(null);
-    resetGeneratedState(); // clear stale result when clothing changes
-
+    resetGeneratedState();
     if (!file) {
       clearClothing();
       return;
     }
-
     try {
       setIsPreparingClothing(true);
-
       const compressed = await compressImage(file, {
         maxWidth: 1200,
         maxHeight: 1600,
         quality: 0.84,
         mimeType: "image/jpeg",
       });
-
       if (clothingBlobRef.current) {
         URL.revokeObjectURL(clothingBlobRef.current);
         clothingBlobRef.current = null;
       }
-
       const blobPreviewUrl = URL.createObjectURL(compressed);
       clothingBlobRef.current = blobPreviewUrl;
       setClothing(compressed);
       setClothingUrl(blobPreviewUrl);
       setClothingInputUrl("");
-
-      const durableUrl = await uploadFileToSupabase(compressed, "clothing-uploads");
-
+      const durableUrl = await uploadFileToSupabase(
+        compressed,
+        "clothing-uploads"
+      );
       if (clothingBlobRef.current) {
         URL.revokeObjectURL(clothingBlobRef.current);
         clothingBlobRef.current = null;
       }
-
       setClothing(null);
       setClothingUrl(durableUrl);
-
       const stored = readTryOnStorage();
       writeTryOnStorage({ ...stored, clothingUrl: durableUrl });
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (clothingBlobRef.current) {
         URL.revokeObjectURL(clothingBlobRef.current);
         clothingBlobRef.current = null;
       }
       setClothing(null);
       setClothingUrl(null);
-      setError(err.message || "Failed to upload clothing image.");
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Failed to upload clothing image.";
+      setError(message);
     } finally {
       setIsPreparingClothing(false);
     }
@@ -711,176 +649,184 @@ export default function TryOnPage() {
       return;
     }
     resetGeneratedState();
-
     if (clothingBlobRef.current) {
       URL.revokeObjectURL(clothingBlobRef.current);
       clothingBlobRef.current = null;
     }
-
     setClothing(null);
     setClothingUrl(trimmed);
     setClothingInputUrl(trimmed);
-
     const stored = readTryOnStorage();
     writeTryOnStorage({ ...stored, clothingUrl: trimmed });
   }
 
   function clearClothing() {
     resetGeneratedState();
-
     if (clothingBlobRef.current) {
       URL.revokeObjectURL(clothingBlobRef.current);
       clothingBlobRef.current = null;
     }
-
     setClothing(null);
     setClothingUrl(null);
     setClothingInputUrl("");
-
     const stored = readTryOnStorage();
     writeTryOnStorage({ ...stored, clothingUrl: null });
     localStorage.removeItem("selectedClothing");
   }
 
   // ---------------------------------------------------------------------------
-  // Save to wishlist
+  // Save to wishlist / wardrobe
   // ---------------------------------------------------------------------------
 
   async function saveItemToWishlist() {
     try {
       setError(null);
       setIsSavingWishlist(true);
-
       if (!user) {
         setError("You must be logged in to save to wishlist.");
         return;
       }
-
       if (!clothingUrl) {
         setError("Please select a clothing item first.");
         return;
       }
-
       const durableUrl = await ensureClothingStoredInSupabase(clothingUrl);
-
       const { error } = await supabase.from("wishlist").insert({
         user_id: user.id,
         image_url: durableUrl,
       });
-
       if (error) {
         setError(error.message);
         return;
       }
-
       alert("Saved to wishlist!");
-    } catch (err: any) {
-      setError(err.message || "Something went wrong.");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Something went wrong.";
+      setError(message);
     } finally {
       setIsSavingWishlist(false);
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Save to wardrobe
-  // ---------------------------------------------------------------------------
-
   async function saveItemToWardrobe() {
     try {
       setError(null);
       setIsSavingWardrobe(true);
-
       if (!user) {
         setError("You must be logged in to save to wardrobe.");
         return;
       }
-
       if (!clothingUrl) {
         setError("Please select a clothing item first.");
         return;
       }
-
       const durableUrl = await ensureClothingStoredInSupabase(clothingUrl);
-
       const { error } = await supabase.from("wardrobe").insert({
         user_id: user.id,
         image_url: durableUrl,
       });
-
       if (error) {
         setError(error.message);
         return;
       }
-
       alert("Saved to wardrobe!");
-    } catch (err: any) {
-      setError(err.message || "Something went wrong.");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Something went wrong.";
+      setError(message);
     } finally {
       setIsSavingWardrobe(false);
     }
   }
 
   // ---------------------------------------------------------------------------
-  // Generate preview
+  // Generate — AI path or canvas fallback
   // ---------------------------------------------------------------------------
 
   async function onGenerate() {
-    if (isGenerating) return;
+    // Generation lock — prevent duplicate runs
+    if (generationIsActive) return;
+
+    // --- Input validation BEFORE any state reset ---
+    if (!avatarUrl) {
+      setError("Please upload your photo or select an avatar from outfits.");
+      return;
+    }
+    if (!clothingUrl) {
+      setError("Please select a clothing item.");
+      return;
+    }
+    if (avatarUrl.startsWith("blob:")) {
+      setError("Please wait for the avatar to finish uploading.");
+      return;
+    }
+    if (clothingUrl.startsWith("blob:")) {
+      setError("Please wait for the clothing image to finish uploading.");
+      return;
+    }
+
+    // Debug logs
+    console.log("AI Connected:", aiConnected);
+    console.log("Avatar URL:", avatarUrl);
+    console.log("Clothing URL:", clothingUrl);
+
+    // Validation passed — now safe to reset previous result
+    resetGeneratedState();
+    setIsGenerating(true);
 
     try {
-      setError(null);
-
-      if (!avatarUrl) {
-        setError("Please upload your photo or select an avatar from outfits.");
-        return;
-      }
-      if (!clothingUrl) {
-        setError("Please select a clothing item.");
-        return;
-      }
-      if (avatarUrl.startsWith("blob:")) {
-        setError("Please wait for the avatar to finish uploading.");
-        return;
-      }
-      if (clothingUrl.startsWith("blob:")) {
-        setError("Please wait for the clothing image to finish uploading.");
-        return;
-      }
-
-      setIsGenerating(true);
-
-      // Ensure clothing is in Supabase so canvas crossOrigin works
+      // Ensure clothing is durably stored before any generation path
       let finalClothingUrl = clothingUrl;
       if (isExternalRemoteUrl(clothingUrl)) {
-        try {
-          finalClothingUrl = await ensureClothingStoredInSupabase(clothingUrl);
-        } catch (importErr: any) {
+        finalClothingUrl = await ensureClothingStoredInSupabase(clothingUrl);
+      }
+
+      if (aiConnected) {
+        // --- AI path ---
+        // Avatar must already be a Supabase Storage URL for AI generation
+        if (!isSupabaseStorageUrl(avatarUrl)) {
           setError(
-            importErr.message || "Failed to prepare clothing image for preview."
+            "Your avatar must be a saved Supabase Storage URL to use AI generation. Please re-upload."
           );
           return;
         }
+
+        // Clothing must be a Supabase Storage URL for AI generation
+        if (!isSupabaseStorageUrl(finalClothingUrl)) {
+          setError(
+            "Clothing must be uploaded to storage before AI generation. Please save it first."
+          );
+          return;
+        }
+
+        // Hand off to AI generation hook.
+        // Do NOT call setIsGenerating(false) here — the finally block handles it.
+        await aiGeneration.generate(avatarUrl, finalClothingUrl);
+        return;
       }
 
+      // --- Canvas fallback path ---
       const currentKey = `${avatarUrl}-${finalClothingUrl}`;
-      if (currentKey === lastKey && resultUrl) return;
+      if (currentKey === lastKey && canvasResultUrl) return;
 
       setLastKey(currentKey);
 
       const resultBlob = await createCompositePreview();
 
-      if (resultBlobRef.current) {
-        URL.revokeObjectURL(resultBlobRef.current);
-        resultBlobRef.current = null;
+      if (canvasBlobRef.current) {
+        URL.revokeObjectURL(canvasBlobRef.current);
+        canvasBlobRef.current = null;
       }
 
       const localResultUrl = URL.createObjectURL(resultBlob);
-      resultBlobRef.current = localResultUrl;
-
+      canvasBlobRef.current = localResultUrl;
       setPendingResultBlob(resultBlob);
-      setResultUrl(localResultUrl);
-    } catch (err: any) {
-      setError(err.message || "Something went wrong.");
+      setCanvasResultUrl(localResultUrl);
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Something went wrong.";
+      setError(message);
     } finally {
       setIsGenerating(false);
     }
@@ -891,60 +837,80 @@ export default function TryOnPage() {
   // ---------------------------------------------------------------------------
 
   async function saveGeneratedResult() {
+    if (!user) {
+      setError("You must be logged in to save outfits.");
+      return;
+    }
+
+    // AI result — already stored in Supabase Storage by the job route
+    if (aiGeneration.resultUrl) {
+      try {
+        setIsSavingResult(true);
+        setError(null);
+
+        const { error: insertError } = await supabase.from("outfits").insert({
+          user_id: user.id,
+          image_url: aiGeneration.resultUrl,
+        });
+
+        if (insertError) {
+          setError(insertError.message);
+          return;
+        }
+
+        aiGeneration.reset();
+        alert("Saved to outfits!");
+      } catch (err: unknown) {
+        const message =
+          err instanceof Error ? err.message : "Something went wrong.";
+        setError(message);
+      } finally {
+        setIsSavingResult(false);
+      }
+
+      return;
+    }
+
+    // Canvas result — upload blob first
+    if (!pendingResultBlob) {
+      setError("No generated result to save.");
+      return;
+    }
     try {
-      if (!pendingResultBlob) {
-        setError("No generated result to save.");
-        return;
-      }
-      if (!user) {
-        setError("You must be logged in to save outfits.");
-        return;
-      }
-
-      setError(null);
       setIsSavingResult(true);
-
+      setError(null);
       const resultFile = new File(
         [pendingResultBlob],
         `tryon-result-${Date.now()}.jpg`,
         { type: "image/jpeg" }
       );
-
       const resultPublicUrl = await uploadFileToSupabase(resultFile, "results");
-
       const { error: insertError } = await supabase.from("outfits").insert({
         user_id: user.id,
         image_url: resultPublicUrl,
       });
-
       if (insertError) {
         setError(insertError.message);
         return;
       }
-
-      if (resultBlobRef.current) {
-        URL.revokeObjectURL(resultBlobRef.current);
-        resultBlobRef.current = null;
+      if (canvasBlobRef.current) {
+        URL.revokeObjectURL(canvasBlobRef.current);
+        canvasBlobRef.current = null;
       }
-
-      setResultUrl(resultPublicUrl);
+      setCanvasResultUrl(resultPublicUrl);
       setPendingResultBlob(null);
-    } catch (err: any) {
-      setError(err.message || "Something went wrong.");
+      alert("Saved to outfits!");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Something went wrong.";
+      setError(message);
     } finally {
       setIsSavingResult(false);
     }
   }
 
   function discardGeneratedResult() {
-    if (resultBlobRef.current) {
-      URL.revokeObjectURL(resultBlobRef.current);
-      resultBlobRef.current = null;
-    }
-    setPendingResultBlob(null);
-    setResultUrl(null);
-    setLastKey(null);
-    setError(null);
+    resetGeneratedState();
   }
 
   // ---------------------------------------------------------------------------
@@ -1025,7 +991,6 @@ export default function TryOnPage() {
                   >
                     Remove avatar
                   </button>
-
                   {showUseProfileAvatarButton && (
                     <button
                       onClick={applyProfileAvatar}
@@ -1084,11 +1049,15 @@ export default function TryOnPage() {
             />
 
             <div className="space-y-2">
-              <label className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+              <label
+                htmlFor="clothing-url-input"
+                className="text-sm font-semibold text-zinc-900 dark:text-zinc-50"
+              >
                 Or add item by URL
               </label>
               <div className="flex gap-2">
                 <input
+                  id="clothing-url-input"
                   type="text"
                   value={clothingInputUrl}
                   onChange={(e) => setClothingInputUrl(e.target.value)}
@@ -1136,18 +1105,10 @@ export default function TryOnPage() {
             )}
 
             <div className="grid grid-cols-1 gap-3">
-              <ButtonLink
-                href="/wardrobe"
-                variant="secondary"
-                className="w-full"
-              >
+              <ButtonLink href="/wardrobe" variant="secondary" className="w-full">
                 From wardrobe
               </ButtonLink>
-              <ButtonLink
-                href="/wishlist"
-                variant="secondary"
-                className="w-full"
-              >
+              <ButtonLink href="/wishlist" variant="secondary" className="w-full">
                 From wishlist
               </ButtonLink>
             </div>
@@ -1156,9 +1117,7 @@ export default function TryOnPage() {
               <button
                 type="button"
                 onClick={saveItemToWishlist}
-                disabled={
-                  !clothingUrl || isSavingWishlist || clothingIsUploading
-                }
+                disabled={!clothingUrl || isSavingWishlist || clothingIsUploading}
                 className="rounded-xl border border-zinc-300 px-4 py-2.5 text-sm font-medium text-zinc-900 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50"
               >
                 {isSavingWishlist ? "Saving..." : "Save to wishlist"}
@@ -1167,9 +1126,7 @@ export default function TryOnPage() {
               <button
                 type="button"
                 onClick={saveItemToWardrobe}
-                disabled={
-                  !clothingUrl || isSavingWardrobe || clothingIsUploading
-                }
+                disabled={!clothingUrl || isSavingWardrobe || clothingIsUploading}
                 className="rounded-xl border border-zinc-300 px-4 py-2.5 text-sm font-medium text-zinc-900 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50"
               >
                 {isSavingWardrobe ? "Saving..." : "Save to wardrobe"}
@@ -1184,23 +1141,32 @@ export default function TryOnPage() {
           </div>
         )}
 
+        {aiGeneration.errorMessage && (
+          <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-950/40 dark:text-red-200">
+            {aiGeneration.errorMessage}
+          </div>
+        )}
+
+        {/* Generate button */}
         <button
           onClick={onGenerate}
           disabled={
             !canGenerate ||
             isGenerating ||
+            aiGeneration.status === "starting" ||
+            aiGeneration.status === "running" ||
             isPreparingAvatar ||
             clothingIsUploading
           }
           className="inline-flex min-h-12 w-full items-center justify-center rounded-2xl bg-black px-4 py-3 text-sm font-medium text-white shadow-sm transition disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900"
         >
-          {isGenerating ? (
+          {generationIsActive ? (
             <span className="inline-flex items-center gap-2">
-              Generating preview
+              {aiConnected ? "Generating with AI" : "Generating preview"}
               <LoadingDots />
             </span>
           ) : (
-            "Generate preview"
+            aiConnected ? "Generate with AI" : "Generate preview"
           )}
         </button>
 
@@ -1221,20 +1187,20 @@ export default function TryOnPage() {
           </div>
 
           <div className="mt-4">
-            {isGenerating ? (
+            {generationIsActive ? (
               <PreviewSkeleton />
-            ) : resultUrl ? (
+            ) : (aiGeneration.resultUrl ?? canvasResultUrl) ? (
               <div className="space-y-3">
                 <div className="overflow-hidden rounded-2xl border border-zinc-200 dark:border-zinc-800">
                   <img
-                    src={resultUrl}
+                    src={aiGeneration.resultUrl ?? canvasResultUrl ?? ""}
                     alt="Generated try-on result"
                     className="block h-auto max-h-[32rem] w-full object-contain bg-white dark:bg-zinc-950"
                     loading="lazy"
                   />
                 </div>
 
-                {pendingResultBlob ? (
+                {(pendingResultBlob !== null || aiGeneration.resultUrl !== null) ? (
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <button
                       onClick={saveGeneratedResult}
