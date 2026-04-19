@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { decryptApiKey } from "@/lib/ai/crypto";
 import { getPrediction } from "@/lib/ai/replicate";
-import { downloadAndStoreResult, storagePathToPublicUrl } from "@/lib/ai/storage";
+import {
+  downloadAndStoreResult,
+  storagePathToPublicUrl,
+} from "@/lib/ai/storage";
 
 type JobResponse = {
   jobId: string;
@@ -13,10 +16,10 @@ type JobResponse = {
 
 export async function GET(
   _req: NextRequest,
-  { params }: { params: { jobId: string } }
+  { params }: { params: Promise<{ jobId: string }> }
 ): Promise<NextResponse> {
   try {
-    const { jobId } = params;
+    const { jobId } = await params;
 
     if (!jobId) {
       return NextResponse.json({ error: "jobId is required." }, { status: 400 });
@@ -81,14 +84,20 @@ export async function GET(
       .maybeSingle();
 
     if (!connection) {
-      return NextResponse.json({ error: "AI connection not found." }, { status: 422 });
+      return NextResponse.json(
+        { error: "AI connection not found." },
+        { status: 422 }
+      );
     }
 
     let apiKey: string;
     try {
       apiKey = decryptApiKey(connection.encrypted_key);
     } catch {
-      return NextResponse.json({ error: "Failed to decrypt API key." }, { status: 500 });
+      return NextResponse.json(
+        { error: "Failed to decrypt API key." },
+        { status: 500 }
+      );
     }
 
     let prediction;
@@ -206,6 +215,9 @@ export async function GET(
     return NextResponse.json(response);
   } catch (err: unknown) {
     console.error("[GET /api/ai/jobs/[jobId]]", err);
-    return NextResponse.json({ error: "Unexpected server error." }, { status: 500 });
+    return NextResponse.json(
+      { error: "Unexpected server error." },
+      { status: 500 }
+    );
   }
 }
