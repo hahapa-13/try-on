@@ -14,6 +14,64 @@ type WardrobeItem = {
   type?: string | null;
 };
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function isSupabaseStorageUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.hostname.endsWith(".supabase.co") &&
+      parsed.pathname.includes("/storage/v1/object/public/")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isExternalRemoteUrl(url: string): boolean {
+  if (!url) return false;
+  if (url.startsWith("blob:")) return false;
+  if (isSupabaseStorageUrl(url)) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Imports an external image via the server-side API route so it ends up in
+ * Supabase Storage. Returns the durable Supabase public URL.
+ */
+async function importExternalImageViaServer(
+  imageUrl: string,
+  folder = "wardrobe-items"
+): Promise<string> {
+  const res = await fetch("/api/import-image", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ imageUrl, folder }),
+  });
+
+  const json = await res.json();
+
+  if (!res.ok || !json.publicUrl) {
+    throw new Error(
+      json.error ||
+        "Failed to import the image. Please upload the image file directly instead."
+    );
+  }
+
+  return json.publicUrl as string;
+}
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
+
 export default function WardrobePage() {
   const { user, loading } = useUser();
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
@@ -67,7 +125,7 @@ export default function WardrobePage() {
     }
   }
 
-  async function uploadFileToSupabase(file: File) {
+  async function uploadFileToSupabase(file: File): Promise<string> {
     const filePath = `wardrobe-items/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
 
     const { data, error } = await supabase.storage
@@ -106,10 +164,27 @@ export default function WardrobePage() {
 
       setSaving(true);
 
-      let imageUrl = newUrl.trim();
+      let imageUrl = "";
 
       if (newFile) {
+        // Local file — upload directly via browser client
         imageUrl = await uploadFileToSupabase(newFile);
+      } else {
+        const trimmedUrl = newUrl.trim();
+
+        if (isSupabaseStorageUrl(trimmedUrl)) {
+          // Already in our storage — use as-is
+          imageUrl = trimmedUrl;
+        } else if (isExternalRemoteUrl(trimmedUrl)) {
+          // External URL — import server-side to avoid CORS issues in canvas later
+          imageUrl = await importExternalImageViaServer(
+            trimmedUrl,
+            "wardrobe-items"
+          );
+        } else {
+          setError("Please enter a valid image URL.");
+          return;
+        }
       }
 
       const { error } = await supabase.from("wardrobe").insert({
@@ -163,16 +238,24 @@ export default function WardrobePage() {
     }
   }
 
+  // Writes the Supabase-stored image_url to localStorage so Try On picks it
+  // up via the focus-sync listener and the mount handoff.
   function handleUseInTryOn(imageUrl: string) {
     localStorage.setItem("selectedClothing", imageUrl);
     window.location.href = "/try-on";
   }
 
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+
   if (loading || pageLoading) {
     return (
       <div className="min-h-screen bg-zinc-50 dark:bg-black">
         <div className="mx-auto w-full max-w-6xl px-4 py-6">
-          <div className="text-sm text-zinc-500 dark:text-zinc-400">Loading wardrobe...</div>
+          <div className="text-sm text-zinc-500 dark:text-zinc-400">
+            Loading wardrobe...
+          </div>
         </div>
       </div>
     );

@@ -14,7 +14,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Validate it is an http/https URL
     let parsed: URL;
     try {
       parsed = new URL(imageUrl);
@@ -32,19 +31,18 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Fetch the image server-side — no CORS restrictions here
     let fetchResponse: Response;
     try {
       fetchResponse = await fetch(imageUrl, {
         headers: {
-          // Some CDNs require a browser-like User-Agent
           "User-Agent":
-            "Mozilla/5.0 (compatible; FitMeBot/1.0; +https://fitme.ai)",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+          Referer: imageUrl,
         },
-        // next: { revalidate: 0 } — ensure no caching of the fetch
         cache: "no-store",
       });
-    } catch (fetchErr: any) {
+    } catch {
       return NextResponse.json(
         {
           error:
@@ -64,9 +62,14 @@ export async function POST(req: NextRequest) {
     }
 
     const contentType = fetchResponse.headers.get("content-type") ?? "";
-    if (!contentType.startsWith("image/")) {
+
+    const isLikelyImage =
+      contentType.startsWith("image/") ||
+      /\.(jpg|jpeg|png|webp|avif|gif)(\?|$)/i.test(imageUrl);
+
+    if (!isLikelyImage) {
       return NextResponse.json(
-        { error: "The URL does not point to a valid image." },
+        { error: "The URL does not appear to be an image." },
         { status: 422 }
       );
     }
@@ -74,18 +77,25 @@ export async function POST(req: NextRequest) {
     const arrayBuffer = await fetchResponse.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // Derive extension from content-type
-    const ext = contentType.split("/")[1]?.split(";")[0]?.trim() ?? "jpg";
-    const filename = `imported-${Date.now()}.${ext}`;
+    let ext = contentType.split("/")[1]?.split(";")[0]?.trim() ?? "";
+
+    if (!ext) {
+      const match = imageUrl.match(/\.(jpg|jpeg|png|webp|avif|gif)(\?|$)/i);
+      ext = match?.[1]?.toLowerCase() ?? "jpg";
+    }
+
+    const safeExt = ext.replace(/[^a-zA-Z0-9]/g, "") || "jpg";
+    const filename = `imported-${Date.now()}.${safeExt}`;
     const filePath = `${folder}/${filename}`;
 
-    // Upload to Supabase Storage using the server client
     const supabase = await createSupabaseServerClient();
 
     const { data: uploadData, error: uploadError } = await supabase.storage
       .from("outfits")
       .upload(filePath, buffer, {
-        contentType,
+        contentType: contentType.startsWith("image/")
+          ? contentType
+          : `image/${safeExt}`,
         upsert: false,
       });
 
