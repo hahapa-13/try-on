@@ -131,13 +131,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     });
 
     if (!geminiRes.ok) {
-      const errorText = await geminiRes.text();
-      console.error("[Gemini API error]", geminiRes.status, errorText);
-      return NextResponse.json(
-        { error: `Gemini API error (${geminiRes.status}). Check your API key and quota.` },
-        { status: 502 }
-      );
-    }
+        const errorText = await geminiRes.text();
+        console.error("[Gemini API error raw]", geminiRes.status, errorText);
+      
+        return NextResponse.json(
+          {
+            error: `Gemini API error (${geminiRes.status}): ${errorText}`,
+          },
+          { status: 502 }
+        );
+      }
 
     const geminiData = await geminiRes.json();
 
