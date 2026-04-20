@@ -26,7 +26,7 @@ export function useAiConnection(): UseAiConnectionReturn {
     try {
       setLoading(true);
       setError(null);
-      const res = await fetch("/api/ai/connect", { cache: "no-store" });
+      const res = await fetch("/api/ai/status", { cache: "no-store" });
       const json = await res.json();
       if (!res.ok) {
         setError(json.error ?? "Failed to load AI connection status.");
