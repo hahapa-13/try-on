@@ -79,16 +79,16 @@ export default function AiSettingsPage() {
               className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-sm text-zinc-900 outline-none placeholder:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
             />
             <p className="text-xs text-zinc-400 dark:text-zinc-500">
-              {"Get your key at "}
-              
-                href="https://aistudio.google.com/app/apikey"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline hover:text-zinc-700 dark:hover:text-zinc-300"
-              >
-                aistudio.google.com
-              </a>
-            </p>
+  Get your key at{" "}
+  <a
+    href="https://aistudio.google.com/app/apikey"
+    target="_blank"
+    rel="noopener noreferrer"
+    className="underline hover:text-zinc-700 dark:hover:text-zinc-300"
+  >
+    aistudio.google.com
+  </a>
+</p>
           </div>
 
           {errorMessage && (
