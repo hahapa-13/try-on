@@ -86,40 +86,76 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         contents: [
           {
             parts: [
-              {
-                text:
-"Perform a high-precision virtual try-on. " +
-"The first image is a person. The second image is a garment. " +
-
-"STRICT RULES: " +
-"Preserve the person's face, identity, body shape, pose, and background EXACTLY. " +
-"Do NOT alter camera angle, zoom, lighting direction, or proportions. " +
-"Do NOT resize or distort any body parts. " +
-
-"Garment must be realistically fitted onto the body depending on type (top, pants, or shoes). " +
-"Align correctly with anatomy (shoulders, waist, legs, feet). " +
-
-"Maintain realistic fabric behavior including folds, tension, and shadows. " +
-"Ensure correct contact with the ground for shoes. " +
-
-"Match lighting, shadows, and colors with the original image. " +
-"Blend seamlessly with no visible edges or artifacts. " +
-
-"Output ONLY the final realistic image. No text."
-              },
-              {
-                inlineData: {
-                  mimeType: avatarImage.mimeType,
-                  data: avatarImage.base64,
+                {
+                  text: `
+              TASK: High-precision photorealistic virtual try-on image editing.
+              
+              You are editing an existing real photo, not generating a new scene.
+              
+              INPUT:
+              - Image 1: person photo
+              - Image 2: garment photo
+              
+              GOAL:
+              Replace only the relevant clothing area on the person with the provided garment and create a realistic final photo.
+              
+              STRICT RULES:
+              - Preserve the person's identity, face, hair, skin tone, body shape, pose, hands, legs, feet, and background exactly.
+              - Preserve the original camera angle, framing, crop, perspective, composition, and zoom exactly.
+              - Preserve original body proportions exactly.
+              - Do not reshape, resize, stretch, slim, enlarge, or distort any body part.
+              - Do not generate a new person.
+              - Do not generate a new pose.
+              - Do not change the background or scene.
+              - Do not add extra garments, accessories, layers, or design details not visible in the garment image.
+              
+              GARMENT LOGIC:
+              - Automatically determine whether the garment is upper-body, lower-body, or full-body.
+              - Apply it only to the correct body region.
+              - Replace only the corresponding clothing area.
+              - Keep all unrelated regions unchanged.
+              
+              GARMENT FIDELITY:
+              - Preserve the garment's real shape, structure, fit, texture, seams, folds, stitching, edges, material behavior, logos, graphics, and visible design details.
+              - Do not simplify the garment.
+              - Do not invent missing details.
+              - Keep the garment visually faithful to the product image.
+              
+              FIT AND ANATOMY:
+              - Fit the garment naturally to the existing body and pose.
+              - Respect anatomy and posture exactly.
+              - Keep collars, sleeves, shoulders, waistlines, hems, pant legs, and openings aligned correctly.
+              - Preserve natural drape, tension, compression, and folds where relevant.
+              - Avoid floating fabric, clipping, duplication, warped geometry, or broken edges.
+              
+              REALISM:
+              - Match the original image lighting, shadow direction, contrast, color balance, and depth.
+              - Add realistic contact shadows where needed.
+              - Blend seamlessly into the original photo.
+              - Preserve a real photographic look.
+              - Avoid blur, halos, ghosting, double edges, fake folds, over-smoothing, and visible AI artifacts.
+              
+              OUTPUT:
+              - Return one single final photorealistic edited image only.
+              - No text.
+              - No explanation.
+              - No labels.
+              - No comparison panel.
+                  `,
                 },
-              },
-              {
-                inlineData: {
-                  mimeType: clothingImage.mimeType,
-                  data: clothingImage.base64,
+                {
+                  inlineData: {
+                    mimeType: avatarImage.mimeType,
+                    data: avatarImage.base64,
+                  },
                 },
-              },
-            ],
+                {
+                  inlineData: {
+                    mimeType: clothingImage.mimeType,
+                    data: clothingImage.base64,
+                  },
+                },
+              ],
           },
         ],
         generationConfig: {
