@@ -86,7 +86,7 @@ function StatCard({
   sub,
   icon,
   index,
-}: (typeof STATS)[0] & { index: number }) {
+}: (typeof STATS)[number] & { index: number }) {
   const ref = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState(false);
   const count = useCountUp(value, 1600, active);
