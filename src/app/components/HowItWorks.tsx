@@ -204,7 +204,7 @@ function StepCard({
   step,
   index,
 }: {
-  step: (typeof STEPS)[0];
+  step: (typeof STEPS)[number];
   index: number;
 }) {
   return (
