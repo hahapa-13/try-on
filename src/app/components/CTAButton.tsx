@@ -1,8 +1,10 @@
+"use client";
+
 import Link from "next/link";
 
 interface CTAButtonProps {
   href: string;
-  variant?: "primary" | "secondary";
+  variant?: "primary" | "secondary" | "ghost";
   children: React.ReactNode;
   className?: string;
 }
@@ -14,17 +16,22 @@ export function CTAButton({
   className = "",
 }: CTAButtonProps) {
   const base =
-    "inline-flex items-center justify-center rounded-lg text-sm font-medium transition-all duration-150 px-5 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-2";
+    "inline-flex items-center justify-center rounded-xl text-sm font-semibold " +
+    "transition-all duration-200 focus-visible:outline-none " +
+    "focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-black";
 
-  const variants = {
-    primary:
-      "bg-black text-white hover:bg-zinc-800 active:scale-[0.98]",
-    secondary:
-      "border border-zinc-300 bg-white text-black hover:border-zinc-400 hover:bg-zinc-50 active:scale-[0.98]",
+  const styles: Record<string, string> = {
+    primary:   "btn-gold px-6 py-3",
+    secondary: "btn-ghost px-6 py-3",
+    ghost:     "btn-ghost px-6 py-3",
   };
 
   return (
-    <Link href={href} className={`${base} ${variants[variant]} ${className}`}>
+    <Link
+      href={href}
+      className={`${base} ${styles[variant]} ${className}`}
+      style={variant === "primary" ? { color: "#080808" } : undefined}
+    >
       {children}
     </Link>
   );

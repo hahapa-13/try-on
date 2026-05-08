@@ -1,73 +1,366 @@
 @import "tailwindcss";
 
+/* ============================================================
+   DESIGN TOKENS
+============================================================ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Core backgrounds */
+  --black:               #080808;
+  --black-soft:          #0f0f0f;
+  --black-card:          #121212;
+  --black-border:        #1e1e1e;
+  --black-border-bright: #2a2a2a;
+
+  /* Gold / amber — single brand accent */
+  --gold:                #c9974a;
+  --gold-light:          #e8b96a;
+  --gold-dim:            #7a5a28;
+  --gold-glow:           rgba(201, 151, 74, 0.18);
+  --gold-glow-sm:        rgba(201, 151, 74, 0.10);
+
+  /* Ambient glows */
+  --glow-purple:         rgba(139, 92, 246, 0.12);
+  --glow-cyan:           rgba(6, 182, 212, 0.08);
+
+  /* Semantic text */
+  --text-primary:        #f0ede8;
+  --text-secondary:      #a09b94;
+  --text-dim:            #5a5550;
+
+  /* Glass */
+  --glass-bg:            rgba(255, 255, 255, 0.035);
+  --glass-border:        rgba(255, 255, 255, 0.07);
+  --glass-hover:         rgba(255, 255, 255, 0.055);
+
+  /* Tailwind v4 bridge */
+  --background:          var(--black);
+  --foreground:          var(--text-primary);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans:        var(--font-geist-sans);
+  --font-mono:        var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* ============================================================
+   BASE RESET
+============================================================ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  color-scheme: dark;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--black);
+  color: var(--text-primary);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
 }
 
-/* =========================
-   ANIMATIONS
-========================= */
+/* ============================================================
+   DISPLAY SERIF — Cormorant Garamond loaded via next/font/google
+   exposed as --font-cormorant CSS variable in layout.tsx
+============================================================ */
+.font-display {
+  font-family: var(--font-cormorant), Georgia, "Times New Roman", serif;
+}
+
+/* ============================================================
+   KEYFRAME ANIMATIONS
+============================================================ */
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(24px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.94); }
+  to   { opacity: 1; transform: scale(1); }
+}
 
 @keyframes floatSoft {
-  0%, 100% {
-    transform: translateY(0px) scale(1);
-  }
-  50% {
-    transform: translateY(-10px) scale(1.04);
-  }
+  0%, 100% { transform: translateY(0px); }
+  50%       { transform: translateY(-10px); }
+}
+
+@keyframes floatSoftDelay {
+  0%, 100% { transform: translateY(0px) rotate(0deg); }
+  50%       { transform: translateY(-8px) rotate(0.8deg); }
+}
+
+@keyframes glowPulse {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50%       { opacity: 1;   transform: scale(1.06); }
+}
+
+@keyframes goldShimmer {
+  0%   { background-position: -200% center; }
+  100% { background-position:  200% center; }
+}
+
+@keyframes particleDrift {
+  0%   { transform: translateY(0) translateX(0);       opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translateY(-120px) translateX(16px); opacity: 0; }
 }
 
 @keyframes drawLine {
-  from {
-    stroke-dashoffset: 700;
-  }
-  to {
-    stroke-dashoffset: 0;
-  }
+  from { stroke-dashoffset: 900; }
+  to   { stroke-dashoffset: 0; }
 }
 
-@keyframes pulseSoft {
-  0%, 100% {
-    transform: scale(1);
-    opacity: 0.9;
-  }
-  50% {
-    transform: scale(1.12);
-    opacity: 1;
-  }
+@keyframes spinSlow {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }
 
-.animate-float-soft {
-  animation: floatSoft 4s ease-in-out infinite;
+@keyframes badgePop {
+  0%   { opacity: 0; transform: scale(0.85) translateY(4px); }
+  70%  { transform: scale(1.03) translateY(-1px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
 }
 
-.animate-pulse-soft {
-  animation: pulseSoft 2.5s ease-in-out infinite;
+@keyframes tickerScroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
 }
+
+/* ============================================================
+   ANIMATION UTILITY CLASSES
+============================================================ */
+.animate-fade-in-up   { animation: fadeInUp    0.7s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-fade-in      { animation: fadeIn      0.6s ease both; }
+.animate-scale-in     { animation: scaleIn     0.7s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-float        { animation: floatSoft      5s ease-in-out infinite; }
+.animate-float-delay  { animation: floatSoftDelay 6s ease-in-out infinite; animation-delay: 1.5s; }
+.animate-glow-pulse   { animation: glowPulse      3s ease-in-out infinite; }
+.animate-spin-slow    { animation: spinSlow       20s linear infinite; }
+.animate-badge-pop    { animation: badgePop       0.55s cubic-bezier(0.16, 1, 0.3, 1) both; }
 
 .animate-draw-line {
-  stroke-dasharray: 700;
-  stroke-dashoffset: 700;
-  animation: drawLine 2.4s ease forwards;
+  stroke-dasharray: 900;
+  stroke-dashoffset: 900;
+  animation: drawLine 2.8s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* Stagger delay helpers */
+.delay-75  { animation-delay:  75ms; }
+.delay-150 { animation-delay: 150ms; }
+.delay-200 { animation-delay: 200ms; }
+.delay-300 { animation-delay: 300ms; }
+.delay-400 { animation-delay: 400ms; }
+.delay-500 { animation-delay: 500ms; }
+.delay-600 { animation-delay: 600ms; }
+.delay-700 { animation-delay: 700ms; }
+.delay-800 { animation-delay: 800ms; }
+.delay-900 { animation-delay: 900ms; }
+
+/* ============================================================
+   GOLD SHIMMER TEXT
+============================================================ */
+.text-gold-shimmer {
+  background: linear-gradient(
+    120deg,
+    var(--gold-dim)   0%,
+    var(--gold-light) 30%,
+    #fff5e0           50%,
+    var(--gold-light) 70%,
+    var(--gold-dim)   100%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: goldShimmer 4s linear infinite;
+}
+
+/* ============================================================
+   GLASS MORPHISM
+============================================================ */
+.glass-card {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  transition: background 0.3s ease, border-color 0.3s ease;
+}
+
+.glass-card:hover {
+  background: var(--glass-hover);
+  border-color: rgba(255, 255, 255, 0.11);
+}
+
+/* ============================================================
+   AMBIENT ORB HELPERS
+============================================================ */
+.orb {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  filter: blur(80px);
+}
+.orb-gold   { background: radial-gradient(circle, rgba(201, 151, 74, 0.22) 0%, transparent 70%); }
+.orb-purple { background: radial-gradient(circle, rgba(139, 92, 246, 0.14) 0%, transparent 70%); }
+.orb-cyan   { background: radial-gradient(circle, rgba(6, 182, 212, 0.10)  0%, transparent 70%); }
+
+/* ============================================================
+   FLOATING PARTICLE
+============================================================ */
+.particle {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  animation: particleDrift linear infinite;
+  will-change: transform, opacity;
+}
+
+/* ============================================================
+   SCROLL REVEAL
+============================================================ */
+.reveal {
+  opacity: 0;
+  transform: translateY(28px);
+  transition: opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.reveal.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.reveal-scale {
+  opacity: 0;
+  transform: scale(0.95);
+  transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.reveal-scale.visible {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* ============================================================
+   GOLD CTA BUTTON
+============================================================ */
+.btn-gold {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--gold) 0%, var(--gold-light) 50%, var(--gold) 100%);
+  background-size: 200% 100%;
+  transition: background-position 0.4s ease, transform 0.2s ease, box-shadow 0.3s ease;
+  box-shadow: 0 4px 24px rgba(201, 151, 74, 0.28);
+}
+.btn-gold:hover {
+  background-position: 100% 0;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 32px rgba(201, 151, 74, 0.4), 0 0 0 3px rgba(201, 151, 74, 0.08);
+}
+.btn-gold:active {
+  transform: translateY(0) scale(0.98);
+}
+.btn-gold::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 60%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.22), transparent);
+  transition: left 0.4s ease;
+}
+.btn-gold:hover::after {
+  left: 160%;
+}
+
+/* ============================================================
+   GHOST BUTTON
+============================================================ */
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--black-border-bright);
+  color: var(--text-secondary);
+  transition: border-color 0.25s ease, color 0.25s ease, background 0.25s ease;
+}
+.btn-ghost:hover {
+  border-color: rgba(201, 151, 74, 0.35);
+  color: var(--gold-light);
+  background: rgba(201, 151, 74, 0.04);
+}
+
+/* ============================================================
+   STAT NUMBER
+============================================================ */
+.stat-number {
+  font-family: var(--font-cormorant), Georgia, serif;
+  font-weight: 700;
+  color: var(--gold);
+  line-height: 1;
+}
+
+/* ============================================================
+   BRAND TICKER
+============================================================ */
+.ticker-track {
+  display: flex;
+  width: max-content;
+  animation: tickerScroll 22s linear infinite;
+}
+.ticker-track:hover {
+  animation-play-state: paused;
+}
+
+/* ============================================================
+   3D TILT CARD
+============================================================ */
+.tilt-card {
+  transform-style: preserve-3d;
+  transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.35s ease;
+  will-change: transform;
+}
+
+/* ============================================================
+   GRAIN TEXTURE
+============================================================ */
+.grain::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.022;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ============================================================
+   CUSTOM SCROLLBAR
+============================================================ */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--black-border-bright); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--gold-dim); }
+
+/* ============================================================
+   SELECTION
+============================================================ */
+::selection {
+  background: rgba(201, 151, 74, 0.22);
+  color: var(--gold-light);
 }
